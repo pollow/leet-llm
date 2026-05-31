@@ -122,7 +122,7 @@ runs on *your own* code. Work the levels in order; each builds on the last.
 
 | Level | Tasks | Status |
 |-------|-------|--------|
-| L0 — NumPy Foundations | 1 / 10 | 🚧 authoring (001 done) |
+| L0 — NumPy Foundations | 10 | ✅ scaffolded (001 solved) |
 | L1 — Tokenization & Batching | — | ⬜ planned |
 | L2 — Operators & Layers | — | ⬜ planned |
 | L3 — Whole-Model & Inference | — | ⬜ planned |
