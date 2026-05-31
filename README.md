@@ -94,21 +94,27 @@ Each task `README.md` follows the same shape:
 
 ## Getting Started
 
+This project uses [`uv`](https://docs.astral.sh/uv/). NumPy covers L0–L4; PyTorch is
+added on demand for L5–L6 (`uv add torch`).
+
 ```bash
-# 1. Install dependencies (NumPy for L0–L4, PyTorch for L5–L6)
-pip install -r requirements.txt
+# 1. Set up the environment (NumPy + pytest)
+uv sync
 
 # 2. Pick a task, open its README, and fill in the stub
 $EDITOR 001_numpy_array_basics/array_basics.py
 
-# 3. Run that task's tests until they're green
-pytest 001_numpy_array_basics
+# 3. Grade it until it's green
+uv run grade 001            # or, from inside the folder, just: uv run grade
+                            # uv run grade 2  → all of Level 2 · uv run grade all → everything
 
 # 4. Stuck? Read the task README's "Read More" links first.
-#    Still stuck? Compare with solution.py.
+#    Still stuck? `uv run grade -s 001` runs the reference solution.
 ```
 
-Work the levels in order — each one builds on the last.
+**Reuse compounds.** Once you've implemented a building block, later tasks import it as a
+library — e.g. a Level-2 attention task does `from leet_llm import group_last_axis` and
+runs on *your own* code. Work the levels in order; each builds on the last.
 
 ---
 
@@ -116,7 +122,7 @@ Work the levels in order — each one builds on the last.
 
 | Level | Tasks | Status |
 |-------|-------|--------|
-| L0 — NumPy Foundations | 10 | 🚧 authoring |
+| L0 — NumPy Foundations | 1 / 10 | 🚧 authoring (001 done) |
 | L1 — Tokenization & Batching | — | ⬜ planned |
 | L2 — Operators & Layers | — | ⬜ planned |
 | L3 — Whole-Model & Inference | — | ⬜ planned |

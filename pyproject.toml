@@ -1,0 +1,34 @@
+[project]
+name = "leet-llm"
+version = "0.1.0"
+description = "A LeetCode-style course that builds a full LLM from scratch, one testable function at a time."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "numpy>=2.0",
+]
+
+[project.scripts]
+grade = "leet_llm.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["leet_llm"]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+]
+
+# Torch is only needed for the PyTorch phase (L5-L6). Install it on demand with:
+#   uv add torch
+# kept out of the default deps so the NumPy phase (L0-L4) stays lightweight.
+
+[tool.pytest.ini_options]
+# Make the repo root importable so tests can `from leet_llm_grader import load`.
+pythonpath = ["."]
+python_files = ["test_*.py"]
+addopts = "-q"
