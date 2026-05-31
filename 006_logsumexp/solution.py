@@ -6,8 +6,11 @@ import numpy as np
 
 
 def logsumexp(x: np.ndarray, axis: int = -1) -> np.ndarray:
-    raise NotImplementedError("reference solution not written yet")
+    m = x.max(axis=axis, keepdims=True)
+    se = np.exp(x - m).sum(axis=axis)
+    lse = np.log(se) + m.squeeze(axis=axis)
+    return lse
 
 
 def log_softmax(x: np.ndarray, axis: int = -1) -> np.ndarray:
-    raise NotImplementedError("reference solution not written yet")
+    return x - np.expand_dims(logsumexp(x, axis), axis=axis)

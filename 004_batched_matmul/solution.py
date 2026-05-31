@@ -6,12 +6,12 @@ import numpy as np
 
 
 def batched_matmul(a: np.ndarray, b: np.ndarray) -> np.ndarray:
-    raise NotImplementedError("reference solution not written yet")
+    return np.einsum("...ij,...jk->...ik", a, b)
 
 
 def outer_product(u: np.ndarray, v: np.ndarray) -> np.ndarray:
-    raise NotImplementedError("reference solution not written yet")
+    return np.einsum("...i,...j->...ij", u, v)
 
 
 def batched_trace(a: np.ndarray) -> np.ndarray:
-    raise NotImplementedError("reference solution not written yet")
+    return np.einsum("...ii", a)

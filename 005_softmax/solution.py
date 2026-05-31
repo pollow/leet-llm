@@ -6,4 +6,6 @@ import numpy as np
 
 
 def softmax(x: np.ndarray, axis: int = -1) -> np.ndarray:
-    raise NotImplementedError("reference solution not written yet")
+    m = x.max(axis=axis, keepdims=True)
+    e = np.exp(x - m)
+    return e / np.sum(e, axis=axis, keepdims=True)

@@ -6,8 +6,10 @@ import numpy as np
 
 
 def add_bias(x: np.ndarray, b: np.ndarray) -> np.ndarray:
-    raise NotImplementedError("reference solution not written yet")
+    return x + b
 
 
 def standardize(x: np.ndarray, eps: float = 1e-5) -> np.ndarray:
-    raise NotImplementedError("reference solution not written yet")
+    mean = x.mean(axis=-1, keepdims=True)
+    var = x.var(axis=-1, keepdims=True)
+    return (x - mean) / np.sqrt(var + eps)
