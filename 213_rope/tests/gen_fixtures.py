@@ -1,11 +1,15 @@
-"""213 — generate frozen golden fixtures for RoPE (rotate-half convention).
+"""213 — generate frozen golden fixtures for both RoPE conventions.
 
 AUTHORING ONLY (needs the ``gen`` group):
     uv run --group gen python 213_rope/tests/gen_fixtures.py
 
-Torch has no canonical RoPE op, so the oracle here is the *pinned* rotate-half reference
-(HuggingFace / Llama convention). The fixture locks that specific layout; the test's
-invariants (norm preservation, relative-position dot product) verify the math independently.
+Oracles (both float64):
+- interleaved: official torch complex rotation (torch.view_as_complex / torch.polar) — the
+  Meta / llama3.np formulation.
+- rotate-half: HuggingFace ``transformers`` official ``rotate_half`` + standard cos/sin
+  (identical to ``apply_rotary_pos_emb``).
+
+Fixtures are prefixed by convention: ``interleaved_*`` and ``half_*``.
 """
 
 from __future__ import annotations
@@ -13,24 +17,36 @@ from __future__ import annotations
 import pathlib
 
 import numpy as np
+import torch
+from transformers.models.llama.modeling_llama import rotate_half
 
 FIX = pathlib.Path(__file__).parent / "fixtures"
 
 
-def rope_ref(x: np.ndarray, positions: np.ndarray, base: float = 10000.0) -> np.ndarray:
+def _interleaved_ref(x, positions, base=10000.0):
     d = x.shape[-1]
-    half = d // 2
-    inv_freq = base ** (-2.0 * np.arange(half) / d)  # (half,)
-    ang = positions[:, None] * inv_freq[None, :]  # (L, half)
-    cos = np.concatenate([np.cos(ang), np.cos(ang)], axis=-1)  # (L, d)
-    sin = np.concatenate([np.sin(ang), np.sin(ang)], axis=-1)
-    x1, x2 = x[..., :half], x[..., half:]
-    rot = np.concatenate([-x2, x1], axis=-1)
-    return x * cos + rot * sin
+    inv_freq = 1.0 / (base ** (np.arange(0, d, 2) / d))  # (d/2,)
+    ang = np.outer(positions, inv_freq)  # (L, d/2)
+    xt = torch.from_numpy(x)
+    cis = torch.polar(torch.ones_like(torch.from_numpy(ang)), torch.from_numpy(ang))
+    xc = torch.view_as_complex(xt.reshape(*xt.shape[:-1], -1, 2))  # (..., L, d/2)
+    return torch.view_as_real(xc * cis).reshape(x.shape).numpy()
+
+
+def _half_ref(x, positions, base=10000.0):
+    d = x.shape[-1]
+    inv_freq = 1.0 / (base ** (torch.arange(0, d, 2, dtype=torch.float64) / d))
+    ang = torch.outer(torch.as_tensor(positions, dtype=torch.float64), inv_freq)  # (L, d/2)
+    emb = torch.cat([ang, ang], dim=-1)  # (L, d)
+    cos, sin = emb.cos(), emb.sin()
+    xt = torch.from_numpy(x)
+    return (xt * cos + rotate_half(xt) * sin).numpy()
 
 
 def main() -> None:
     FIX.mkdir(exist_ok=True)
+    for old in FIX.glob("*.npz"):
+        old.unlink()
     rng = np.random.default_rng(0)
     cases = [
         ("seq3d", rng.standard_normal((2, 4, 8)), np.arange(4)),
@@ -38,9 +54,11 @@ def main() -> None:
         ("offset_positions", rng.standard_normal((1, 1, 4, 8)), np.arange(10, 14)),
     ]
     for name, x, positions in cases:
-        out = rope_ref(x, positions)
-        np.savez(FIX / f"{name}.npz", x=x, positions=positions, out=out)
-        print(f"  wrote {name}.npz  x{x.shape} positions{positions.shape}")
+        np.savez(FIX / f"interleaved_{name}.npz", x=x, positions=positions,
+                 out=_interleaved_ref(x, positions))
+        np.savez(FIX / f"half_{name}.npz", x=x, positions=positions,
+                 out=_half_ref(x, positions))
+        print(f"  wrote interleaved_{name}.npz / half_{name}.npz  x{x.shape}")
 
 
 if __name__ == "__main__":

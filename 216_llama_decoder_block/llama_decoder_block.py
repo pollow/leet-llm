@@ -3,9 +3,10 @@
 Implement ``llama_decoder_block`` (and the ``LlamaBlockParams`` container). See README.md.
 Run `uv run grade 216` to check your work.
 
-Hint: reuse ``from leet_llm import rms_norm, rope, sdpa, swiglu_ffn, add_residual,
-group_last_axis, affine, triangular_mask, AttnParams, SwiGLUParams``. Apply RoPE to the
-per-head q/k projections before the attention scores; pre-norm RMSNorm placement.
+Hint: reuse ``from leet_llm import rms_norm, rope_interleaved, sdpa, swiglu_ffn,
+add_residual, group_last_axis, affine, triangular_mask, AttnParams, SwiGLUParams``. Apply
+RoPE (interleaved convention, as L3 uses) to the per-head q/k projections before the
+attention scores; pre-norm RMSNorm placement.
 """
 
 from __future__ import annotations

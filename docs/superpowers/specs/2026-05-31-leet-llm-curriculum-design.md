@@ -180,7 +180,7 @@ files in `sys.modules`.
 ## 6. Level 0 — NumPy Foundations (fully spec'd)
 
 **Level goal:** fluency with the array operations that all of ML rests on — reshaping,
-broadcasting, matrix products, reductions, indexing, and sampling. 10 tasks.
+broadcasting, matrix products, reductions, indexing, and sampling. 11 tasks.
 
 **Progressive-disclosure note:** every public name and README below is concept-neutral.
 The "Designer note" column records where each skill is *later* reused — this is for the
@@ -201,6 +201,7 @@ curriculum author only and must never appear in the task's README.
 | **008** | `gather_onehot` | `gather_rows(table, idx)`; `one_hot(idx, n)` | gather rows of a `(N, F)` table by integer indices; one-hot encode | embedding lookup |
 | **009** | `masking` | `masked_fill(x, mask, value)`; `triangular_mask(n)` | set positions where a boolean mask is true to a fill value; build a triangular boolean mask | causal/padding attention masks |
 | **010** | `rng_sampling` | `sample_categorical(probs, rng)` | seeded, reproducible sampling from a categorical distribution | temperature/top-p sampling |
+| **011** | `interleave_halves` | `interleave`/`deinterleave`; `split_halves`/`join_halves` | two ways to split & recombine an even last axis: alternating elements vs contiguous front/back blocks | the two RoPE layouts (interleaved pairs vs rotate-half), added 2026-05-31 |
 
 **Each L0 task README links** to relevant NumPy docs (`reshape`, `transpose`, `einsum`,
 broadcasting rules, `random.Generator`) plus one neutral conceptual reference where

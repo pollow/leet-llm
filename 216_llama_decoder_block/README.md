@@ -44,8 +44,9 @@ def llama_decoder_block(x: np.ndarray, params: LlamaBlockParams, n_heads: int,
 
 - *Llama 2*, Touvron et al. 2023: https://arxiv.org/abs/2307.09288
 - *Llama 3*, Grattafiori et al. 2024: https://arxiv.org/abs/2407.21783
-- Reuse `from leet_llm import rms_norm, rope, sdpa, swiglu_ffn, add_residual, group_last_axis,
-  affine, triangular_mask, AttnParams, SwiGLUParams`.
+- Reuse `from leet_llm import rms_norm, rope_interleaved, sdpa, swiglu_ffn, add_residual,
+  group_last_axis, affine, triangular_mask, AttnParams, SwiGLUParams`. (RoPE uses the
+  **interleaved** convention here, matching the L3 capstone.)
 
 ## How to Test
 

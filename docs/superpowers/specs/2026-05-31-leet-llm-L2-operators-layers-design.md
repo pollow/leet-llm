@@ -98,7 +98,7 @@ Reused L0/L1 primitives are imported via the facade — never rebuilt.
 | Id | Slug | Builds | Contrasts | Designer note |
 |----|------|--------|-----------|---------------|
 | **212** | `rms_norm` | `rms_norm(x, weight, eps)` | 203 LayerNorm | no mean-subtraction, no bias; capstone norm |
-| **213** | `rope` | `rope(x, positions)` — rotary embedding on q/k | 204 sinusoidal | **rotate-half** convention (HF/Llama), pinned |
+| **213** | `rope` | `rope_interleaved` + `rope_half` + `rope_qk_dot` (q/k rotation in **both** conventions + relative-position checker) | 204 sinusoidal | interleaved (Meta/`llama3.np`, capstone) **and** rotate-half (HF); reuses L0 011 |
 | **214** | `swiglu` | `swiglu_ffn(x, params)` = `(SiLU(xW₁) ⊙ xW₃)W₂`, bias-free | 207 FFN | reuses 202 `silu`; capstone FFN |
 | **215** | `gqa` | `gqa(x, params, n_heads, n_kv_heads, mask=None)` — `repeat_kv` then attend | 206 MHA | `n_kv_heads==n_heads` ⇒ MHA (invariant test) |
 | **216** | `llama_decoder_block` | pre-norm RMSNorm → RoPE-GQA → RMSNorm → SwiGLU | 211 gpt_block | **the capstone block**; RoPE wired here, not inside 215 |
@@ -137,9 +137,12 @@ written twice, and nothing in the committed test reveals the method.
 2. **Generate the reference in float64** (`.double()`). NumPy defaults to float64, so a
    double-precision torch oracle matches to ~1e-12 → tight tolerances (`rtol=1e-9` ballpark),
    deterministic, no fp32 fuzz.
-3. **The fixture pins the convention.** RoPE (**rotate-half** à la HF, *not* the paper's
-   interleaved pairs), GELU (**exact erf**, not tanh approx), norm `eps` placement, attention
-   scale `1/√dₖ`, mask polarity (bool True ⇒ −∞, from L0 009). The fixture *is* the spec.
+3. **The fixture pins the convention.** RoPE ships **both** conventions — `rope_interleaved`
+   (Meta/`llama3.np`, golden = official torch complex `view_as_complex`/`polar`; this is the
+   capstone form 216/L3 use) and `rope_half` (golden = HF `transformers.rotate_half`); plus
+   `rope_qk_dot` whose tests check the relative-position property. GELU (**exact erf**, not
+   tanh approx), norm `eps` placement, attention scale `1/√dₖ`, mask polarity (bool True ⇒
+   −∞, from L0 009). The fixture *is* the spec.
 4. **Many small cases + invariants/edges.** Parametrize the generator over shapes & seeds for
    lots of KB-sized fixtures, and keep cheap, self-documenting checks alongside:
    - **Invariants:** softmax rows sum to 1; LayerNorm out mean≈0/var≈1 on last axis; RMSNorm
@@ -151,8 +154,9 @@ written twice, and nothing in the committed test reveals the method.
 **Building faithful torch references:** compose torch *primitives* to match our exact weight
 layout — e.g. explicit q/k/v `nn.Linear`/`F.linear` projections + `F.scaled_dot_product_attention`,
 **not** `nn.MultiheadAttention` (its fused-qkv packing won't line up with our signatures).
-`F.layer_norm`, `nn.RMSNorm` (or manual), `F.silu`/`F.gelu` cover the leaves; RoPE uses a
-pinned rotate-half reference; GQA uses `repeat_kv` (+ `enable_gqa` where available).
+`F.layer_norm`, `nn.RMSNorm` (or manual), `F.silu`/`F.gelu` cover the leaves; RoPE uses
+official torch complex rotation (interleaved) and HF `rotate_half` (rotate-half); GQA uses
+`repeat_kv` (+ `enable_gqa` where available).
 
 **Fixture layout (per task):**
 ```
@@ -175,7 +179,7 @@ generated text, and L5's keystone asserts a torch Llama block matches the learne
 Add as each task lands (single source of truth = the task stub). Tentative public names:
 `embedding` (201); `gelu`,`silu` (202); `layer_norm` (203); `sinusoidal_pe` (204); `sdpa`
 (205); `mha` (206); `ffn` (207); `add_residual` (208); `encoder_block` (209); `decoder_block`
-(210); `gpt_block` (211); `rms_norm` (212); `rope` (213); `swiglu_ffn` (214); `gqa` (215);
+(210); `gpt_block` (211); `rms_norm` (212); `rope_interleaved`/`rope_half`/`rope_qk_dot` (213); `swiglu_ffn` (214); `gqa` (215);
 `llama_decoder_block` (216). Params dataclasses (`AttnParams`, `FFNParams`, `SwiGLUParams`,
 `BlockParams`) are exported alongside their owning task. (Exact names finalized per-task at
 scaffold time.)
