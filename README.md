@@ -54,7 +54,7 @@ number** within that level (`001` = level 0, task 01 · `402` = level 4, task 02
 | Lv | Title | What you'll build |
 |----|-------|-------------------|
 | **L0** | **NumPy Foundations** | The math substrate: batched matmul, broadcasting, `einsum`, numerically-stable softmax & logsumexp, top-k, masking, seeded sampling. |
-| **L1** | **Tokenization & Batching** | Text ⇄ tensors: a char tokenizer, then BPE (vocab, merges, encode/decode), special tokens, padding, attention masks, position ids. |
+| **L1** | **Tokenization & Batching** | Text ⇄ tensors: char & byte tokenizers, then BPE (train, save/load, encode/decode), special tokens, a load-only tiktoken path, padding, padding masks, position ids. |
 | **L2** | **Operators & Layers** | The reusable layers as small functions. *Classic:* Linear, Embedding, GELU/SiLU, LayerNorm, positional encoding, attention, MHA, FFN, the GPT block. *Llama upgrade:* RMSNorm, RoPE, SwiGLU, GQA, KV-cache, the Llama block. |
 | **L3** | **Whole-Model & Inference** | Assemble the full stack, load real pretrained weights, sample (greedy / temperature / top-k / top-p), and run the generation loop — **rebuilding `llama3.np`**. Then morph it into the OSS zoo: Mixture-of-Experts, DeepSeek MLA, sliding-window attention, RoPE scaling, QK-norm. |
 | **L4** | **Inference Systems & Serving** | Make it fast and scalable. *Single node:* FlashAttention (online softmax + tiling), PagedAttention (KV block manager), a continuous-batching scheduler (vLLM/SGLang-style), prefix caching. *Multi-host:* tensor parallelism, pipeline parallelism, collectives from scratch, disaggregated prefill/decode. |
@@ -123,7 +123,7 @@ runs on *your own* code. Work the levels in order; each builds on the last.
 | Level | Tasks | Status |
 |-------|-------|--------|
 | L0 — NumPy Foundations | 10 | ✅ scaffolded (0 / 10 solved) |
-| L1 — Tokenization & Batching | — | ⬜ planned |
+| L1 — Tokenization & Batching | 13 | ✅ scaffolded (0 / 13 solved) |
 | L2 — Operators & Layers | — | ⬜ planned |
 | L3 — Whole-Model & Inference | — | ⬜ planned |
 | L4 — Inference Systems & Serving | — | ⬜ planned |
