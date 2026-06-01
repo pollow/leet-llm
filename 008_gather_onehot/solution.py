@@ -6,8 +6,8 @@ import numpy as np
 
 
 def gather_rows(table: np.ndarray, idx: np.ndarray) -> np.ndarray:
-    raise NotImplementedError("reference solution not written yet")
+    return table[idx]
 
 
 def one_hot(idx: np.ndarray, n: int) -> np.ndarray:
-    raise NotImplementedError("reference solution not written yet")
+    return np.eye(n)[idx]
