@@ -1,9 +1,24 @@
+import pathlib
+
 import numpy as np
+import pytest
 
 from leet_llm.grader import load
 
 _m = load(__file__)
 layer_norm = _m.layer_norm
+
+FIX = pathlib.Path(__file__).parent / "fixtures"
+_FIXTURES = sorted(FIX.glob("*.npz"))
+
+
+@pytest.mark.parametrize("path", _FIXTURES, ids=[p.stem for p in _FIXTURES])
+def test_matches_torch_fixture(path):
+    """Frozen goldens from float64 torch F.layer_norm (eps=1e-5)."""
+    d = np.load(path)
+    np.testing.assert_allclose(
+        layer_norm(d["x"], d["gamma"], d["beta"]), d["out"], rtol=1e-9, atol=1e-9
+    )
 
 
 def test_mean0_var1_with_identity_affine():
@@ -25,7 +40,6 @@ def test_affine_decomposition():
 
 
 def test_shift_invariance():
-    # adding a constant to every feature doesn't change the (mean-subtracted) output
     rng = np.random.default_rng(2)
     x = rng.standard_normal((3, 5))
     g, b = np.ones(5), np.zeros(5)

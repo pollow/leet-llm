@@ -1,4 +1,7 @@
+import pathlib
+
 import numpy as np
+import pytest
 
 from leet_llm.grader import load
 
@@ -6,24 +9,16 @@ _m = load(__file__)
 gelu = _m.gelu
 silu = _m.silu
 
-# Frozen anchors (computed once from the definitions via math.erf / sigmoid).
-XS = np.array([-2.0, -1.0, -0.5, 0.0, 0.5, 1.0, 2.0])
-GELU = np.array(
-    [-0.0455002639, -0.1586552539, -0.1542687694, 0.0,
-     0.3457312306, 0.8413447461, 1.9544997361]
-)
-SILU = np.array(
-    [-0.2384058440, -0.2689414214, -0.1887703344, 0.0,
-     0.3112296656, 0.7310585786, 1.7615941560]
-)
+FIX = pathlib.Path(__file__).parent / "fixtures"
+_FIXTURES = sorted(FIX.glob("*.npz"))
 
 
-def test_gelu_anchors():
-    np.testing.assert_allclose(gelu(XS), GELU, atol=1e-8)
-
-
-def test_silu_anchors():
-    np.testing.assert_allclose(silu(XS), SILU, atol=1e-8)
+@pytest.mark.parametrize("path", _FIXTURES, ids=[p.stem for p in _FIXTURES])
+def test_matches_torch_fixture(path):
+    """Frozen goldens from float64 torch F.gelu (exact) / F.silu."""
+    d = np.load(path)
+    np.testing.assert_allclose(gelu(d["x"]), d["gelu"], rtol=1e-9, atol=1e-9)
+    np.testing.assert_allclose(silu(d["x"]), d["silu"], rtol=1e-9, atol=1e-9)
 
 
 def test_zero_maps_to_zero():

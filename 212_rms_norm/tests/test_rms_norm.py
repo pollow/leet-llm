@@ -1,9 +1,22 @@
+import pathlib
+
 import numpy as np
+import pytest
 
 from leet_llm.grader import load
 
 _m = load(__file__)
 rms_norm = _m.rms_norm
+
+FIX = pathlib.Path(__file__).parent / "fixtures"
+_FIXTURES = sorted(FIX.glob("*.npz"))
+
+
+@pytest.mark.parametrize("path", _FIXTURES, ids=[p.stem for p in _FIXTURES])
+def test_matches_torch_fixture(path):
+    """Frozen goldens from float64 torch F.rms_norm (eps=1e-5)."""
+    d = np.load(path)
+    np.testing.assert_allclose(rms_norm(d["x"], d["weight"]), d["out"], rtol=1e-9, atol=1e-9)
 
 
 def test_output_rms_is_one_with_unit_weight():
@@ -24,7 +37,6 @@ def test_weight_scales_output():
 
 
 def test_scale_equivariance():
-    # rescaling the input leaves the (unit-weight) output unchanged
     rng = np.random.default_rng(2)
     x = rng.standard_normal((3, 8))
     w = np.ones(8)
