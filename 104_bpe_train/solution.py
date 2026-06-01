@@ -2,41 +2,29 @@
 
 from __future__ import annotations
 
+from leet_llm import count_pairs, apply_merge, build_char_vocab, char_encode
+
 
 def bpe_train(text: str, vocab_size: int) -> tuple[list[str], list[float]]:
-    tokens: list[str] = sorted(set(text))
-    scores: list[float] = [0.0] * len(tokens)
-    stoi = {t: i for i, t in enumerate(tokens)}
-    seq = [stoi[ch] for ch in text]
+    stoi, tokens = build_char_vocab(text)
+    scores = [0.0] * len(tokens)
+    seq = char_encode(text, stoi)
+    rep = -1.0
 
-    merge_index = 0
     while len(tokens) < vocab_size:
-        counts: dict[tuple[int, int], int] = {}
-        for a, b in zip(seq, seq[1:]):
-            counts[(a, b)] = counts.get((a, b), 0) + 1
+        counts = count_pairs(seq)
         if not counts:
             break
 
         best = max(counts.values())
-        pair = min(
-            (p for p, c in counts.items() if c == best),
-            key=lambda p: (tokens[p[0]], tokens[p[1]]),
-        )
+        cands = [pair for pair, cnt in counts.items() if cnt == best]
+        pair = min(cands, key=lambda p: (tokens[p[0]], tokens[p[1]]))
 
         new_id = len(tokens)
         tokens.append(tokens[pair[0]] + tokens[pair[1]])
-        merge_index += 1
-        scores.append(float(-merge_index))
+        scores.append(rep)
 
-        merged: list[int] = []
-        i, n = 0, len(seq)
-        while i < n:
-            if i < n - 1 and seq[i] == pair[0] and seq[i + 1] == pair[1]:
-                merged.append(new_id)
-                i += 2
-            else:
-                merged.append(seq[i])
-                i += 1
-        seq = merged
+        seq = apply_merge(seq, pair, new_id)
+        rep -= 1
 
     return tokens, scores
