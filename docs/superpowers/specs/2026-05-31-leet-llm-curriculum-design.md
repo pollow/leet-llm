@@ -212,6 +212,17 @@ hand-computed or reference value, (b) shape/dtype, (c) numerical-stability edge 
 relevant. Tests use fixed seeds for reproducibility and load the target via
 `leet_llm.grader.load(__file__)`.
 
+**Testing refinement (L2 onward, 2026-05-31):** prefer **invariants + a few hand-computed
+anchors** over exact-value goldens, and **never embed a parallel reference implementation
+in the test** — recomputing the expected output with a second NumPy implementation is just
+writing the solution twice and leaks the answer to anyone reading the test. Invariants are
+the *defining properties* of the operator (softmax rows sum to 1; LayerNorm output is
+mean≈0/var≈1 on the last axis; a causal mask leaves token *t*'s output unchanged when
+tokens *>t* are perturbed; RMSNorm is scale-equivariant; RoPE preserves norm and makes
+`⟨q_m,k_n⟩` depend only on `m−n`; Linear is linear). This is safe because the **exact-value
+oracle lives downstream**: L3 reproduces `llama3.np`'s generated text end-to-end, and L5's
+keystone asserts a torch Llama block matches the learner's L2 NumPy block bit-for-bit.
+
 ---
 
 ## 7. Open Items (deferred, not blocking)

@@ -1,0 +1,37 @@
+"""206 — Multi-Head Attention.
+
+Implement ``mha`` (and the ``AttnParams`` container). See README.md for details.
+Run `uv run grade 206` to check your work.
+
+Hint: reuse ``from leet_llm import sdpa, group_last_axis, affine`` (205, 001, 003).
+Pass ``x_kv`` for cross-attention; leave it None for self-attention.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+
+import numpy as np
+
+
+@dataclass(frozen=True)
+class AttnParams:
+    """Projection weights for attention, each ``(d, d)``, applied as ``x @ W.T``."""
+
+    Wq: np.ndarray
+    Wk: np.ndarray
+    Wv: np.ndarray
+    Wo: np.ndarray
+
+
+def mha(
+    x_q: np.ndarray,
+    params: AttnParams,
+    n_heads: int,
+    x_kv: np.ndarray | None = None,
+    mask: np.ndarray | None = None,
+) -> np.ndarray:
+    """Multi-head attention. ``x_kv`` defaults to ``x_q`` (self-attention)."""
+    raise NotImplementedError(
+        "Implement mha — see 206_multi_head_attention/README.md"
+    )

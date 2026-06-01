@@ -18,6 +18,7 @@ from __future__ import annotations
 import importlib.util
 import os
 import pathlib
+import sys
 from types import ModuleType
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
@@ -65,6 +66,9 @@ def load_task(folder: str) -> ModuleType:
     spec = importlib.util.spec_from_file_location(module_name, path)
     assert spec and spec.loader, f"could not build import spec for {path}"
     module = importlib.util.module_from_spec(spec)
+    # Register before exec so the module resolves its own name during execution
+    # (dataclasses with bare string annotations look themselves up in sys.modules).
+    sys.modules[module_name] = module
     spec.loader.exec_module(module)
     _cache[key] = module
     return module
