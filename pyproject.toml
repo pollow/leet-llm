@@ -23,10 +23,24 @@ packages = ["leet_llm"]
 dev = [
     "pytest>=8.0",
 ]
+# `gen` is an AUTHORING-ONLY group: torch is the trusted oracle used to generate the
+# frozen .npz test fixtures for L2 (sdpa, mha, blocks, rope, gqa, llama block). It is
+# NEVER imported at `grade` time — tests load the committed .npz, staying torch-free.
+#   uv sync --group gen      # to (re)generate fixtures
+gen = [
+    "torch>=2.0",
+]
 
-# Torch is only needed for the PyTorch phase (L5-L6). Install it on demand with:
-#   uv add torch
-# kept out of the default deps so the NumPy phase (L0-L4) stays lightweight.
+# Torch also returns for the PyTorch phase (L5-L6); kept out of the default deps so the
+# NumPy phase (L0-L4) stays lightweight to install.
+
+[tool.uv.sources]
+torch = { index = "pytorch-cpu" }
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
 
 [tool.pytest.ini_options]
 # Make the repo root importable so tests can `from leet_llm_grader import load`.
