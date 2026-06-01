@@ -23,9 +23,6 @@ You'll implement:
   shape `(..., k)`:
   - `values[..., 0] ≥ values[..., 1] ≥ ... ≥ values[..., k-1]` (descending),
   - `values[..., j] == x[..., indices[..., j]]`.
-
-  A fast approach: use [`np.argpartition`](https://numpy.org/doc/stable/reference/generated/numpy.argpartition.html)
-  to grab the top `k` indices in any order, then sort just those `k` by value (descending).
   Tests use inputs with no ties, so the ordering is unambiguous.
 
 ## Function Signature

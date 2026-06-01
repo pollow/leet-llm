@@ -21,14 +21,12 @@ These are pure indexing exercises — no loops needed.
   ```
   out[s, :] = table[idx[s], :]
   ```
-  NumPy fancy indexing does this directly: `table[idx]`.
 
 - **`one_hot(idx, n)`**: `idx` is an integer array of shape `S` with values in `[0, n)`.
   The result has shape `S + (n,)` and dtype float:
   ```
   out[s, c] = 1.0 if c == idx[s] else 0.0
   ```
-  One clean way: index the rows of an `n × n` identity matrix (`np.eye(n)[idx]`).
 
 ## Function Signature
 

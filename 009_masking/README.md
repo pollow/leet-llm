@@ -21,14 +21,13 @@ You'll implement:
   ```
   out[p] = value   if mask[p] else x[p]
   ```
-  `np.where(mask, value, x)` does exactly this and returns a new array (it does **not**
-  modify `x`).
+  The operation returns a new array (it does **not** modify `x`).
 
 - **`triangular_mask(n)`**: a boolean `(n, n)` array `M` with
   ```
   M[i, j] = True  if j > i  else False
   ```
-  i.e. the strictly upper triangle. `np.triu(np.ones((n, n), dtype=bool), k=1)` is one way.
+  i.e. the strictly upper triangle.
 
 ## Function Signature
 

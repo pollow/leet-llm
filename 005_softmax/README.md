@@ -15,11 +15,11 @@ The naïve formula: `exp(x) / sum(exp(x))`. Mind the **overflow**.
 For a vector `x` along the chosen `axis`:
 
 ```
-e   = exp(x - m)             # exponential
-out = e / sum(e)             # sum along the axis, keepdims
+softmax(x_i) = exp(x_i) / Σ_j exp(x_j)
 ```
 
-The output has the **same shape** as the input.
+For numerical stability, use an equivalent shifted form with `m = max(x)` along `axis`.
+The output has the **same shape** as the input and sums to 1 along `axis`.
 
 ## Function Signature
 

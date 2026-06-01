@@ -46,6 +46,18 @@ clean GPT," with optional BERT/GPT asides on the encoder-vs-decoder split.
   built.
 - **PoC over performance.** We demo the *algorithm* (e.g., FlashAttention's online
   softmax), not a GPU kernel.
+- **Show the math, not the method** *(refined 2026-05-31, applies L2 onward).* A task
+  README states the **goal**, the **canonical math** it needs (the *formula* — e.g.
+  `softmax(QKᵀ/√dₖ)·V`, the RMSNorm definition — which is the problem spec), good
+  **reference docs + the famous paper** when one exists, the **signature**, and **how to
+  test**. It must **not** spell out a step-by-step list of array operations — that is the
+  solution, not the problem. The line: *a formula is the problem statement; a recipe of
+  NumPy steps is the answer.* (L0 originally over-shared the method and was rewritten to
+  remove the spoon-fed recipes.)
+- **Solutions policy** *(refined 2026-05-31, applies L2 onward).* Tasks ship
+  **README + stub + tests only**; `solution.py` is left empty / `NotImplementedError` for
+  the learner to fill. (L1 shipped reference solutions; from L2 we don't — the learner
+  derives the implementation from the math + references.)
 
 ---
 

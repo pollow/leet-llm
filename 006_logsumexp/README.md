@@ -22,7 +22,7 @@ log Σ_i exp(x_i) = m + log Σ_i exp(x_i - m),   where m = max(x)
 ```
 
 Now the largest exponent is `exp(0) = 1`, so nothing overflows. (`m` is taken along
-`axis`, with `keepdims` for the inner sum, then dropped from the result.)
+`axis`.)
 
 **Log-softmax** falls right out of it — no division needed:
 

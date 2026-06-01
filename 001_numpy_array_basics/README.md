@@ -22,19 +22,13 @@ axes; use `reshape`/`transpose` so it stays fully vectorized.
 Work with a 3-D array `x` of shape `(B, L, F)` and a group count `G` that divides `F`,
 with `f = F / G`:
 
-- **`group_last_axis(x, G)`** → shape `(B, G, L, f)`.
-  1. View the last axis `F` as two axes `(G, f)`: reshape `(B, L, F)` → `(B, L, G, f)`.
-  2. Move the new group axis `G` to the front (just after `B`): transpose axes
-     `(0, 2, 1, 3)` → `(B, G, L, f)`.
-
-- **`ungroup_last_axis(x)`** → the exact inverse. Given `(B, G, L, f)`:
-  1. Transpose back: `(0, 2, 1, 3)` → `(B, L, G, f)`.
-  2. Reshape to merge the last two axes → `(B, L, G·f)`.
+- **`group_last_axis(x, G)`** maps `(B, L, F)` to `(B, G, L, f)` while preserving element
+  order within each grouped chunk.
+- **`ungroup_last_axis(x)`** is the inverse map from `(B, G, L, f)` back to `(B, L, F)`.
 
 `ungroup_last_axis(group_last_axis(x, G))` must equal the original `x`.
 
-> ⚠️ A reshape **without** the transpose would interleave the groups in the wrong order.
-> The transpose is what makes each group a contiguous block along the leading axes.
+Shape constraint: `F % G == 0`.
 
 ## Function Signature
 

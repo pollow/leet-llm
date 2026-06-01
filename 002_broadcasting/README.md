@@ -31,8 +31,7 @@ Use broadcasting and reductions only — **no Python `for`-loops** over the data
   out  = (v - mean) / sqrt(var + eps)
   ```
 
-  `eps` is a small constant for numerical stability (so we never divide by ~0). Compute
-  `mean`/`var` with `keepdims=True` so they broadcast back against `x`.
+with the same output shape as `x`. `eps` prevents division by near-zero variance.
 
 ## Function Signature
 

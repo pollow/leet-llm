@@ -22,22 +22,13 @@ With `einsum`, repeated indices are summed and the output indices are whatever y
 after `->`.
 
 - **`batched_matmul(a, b)`**: `a` is `(..., M, K)`, `b` is `(..., K, N)` →  `(..., M, N)`.
-  ```
-  out[..., m, n] = Σ_k a[..., m, k] * b[..., k, n]
-  einsum: "...mk,...kn->...mn"
-  ```
+  `out[..., m, n] = Σ_k a[..., m, k] * b[..., k, n]`.
 
 - **`outer_product(u, v)`**: `u` is `(..., M)`, `v` is `(..., N)` → `(..., M, N)`.
-  ```
-  out[..., m, n] = u[..., m] * v[..., n]
-  einsum: "...m,...n->...mn"
-  ```
+  `out[..., m, n] = u[..., m] * v[..., n]`.
 
 - **`batched_trace(a)`**: `a` is `(..., N, N)` → `(...)`.
-  ```
-  out[...] = Σ_i a[..., i, i]
-  einsum: "...ii->..."
-  ```
+  `out[...] = Σ_i a[..., i, i]`.
 
 ## Function Signature
 

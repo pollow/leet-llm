@@ -21,12 +21,7 @@ Given:
 - `b` of shape `(F_out,)` or `None`,
 
 compute `y` of shape `(..., F_out)`:
-
-```
-y = x @ W.T          # (..., F_in) · (F_in, F_out) -> (..., F_out)
-if b is not None:
-    y = y + b        # (F_out,) broadcasts over the leading axes
-```
+`y[..., o] = sum_i x[..., i] * W[o, i] + b[o]` (when bias is provided).
 
 Storing `W` as `(F_out, F_in)` and transposing in the multiply is the convention used by
 most ML frameworks, so we follow it here.
