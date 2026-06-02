@@ -597,7 +597,7 @@ def main() -> None:
         max_position_embeddings=32, activation_function="gelu",
         scale_embedding=True, share_encoder_decoder_embeddings=True,
         pad_token_id=63, eos_token_id=0, bos_token_id=63,
-        decoder_start_token_id=63, forced_eos_token_id=0,
+        decoder_start_token_id=63, forced_eos_token_id=None,  # None ⇒ HF greedy == pure argmax
     )
     model = MarianMTModel(cfg).double().eval()
     src = np.array([[5, 6, 7, 8, 0]])
@@ -654,18 +654,29 @@ def _params():
 
 
 def test_greedy_matches_hf_generate():
+    # forced_eos=None ⇒ HF greedy is pure argmax; the tiny model never emits eos within
+    # the budget, so translate with a matching budget reproduces the full sequence.
     cfg = _cfg()
-    out = translate(_D["src_ids"], _params(), cfg, max_new_tokens=12)
-    expected = [t for t in _D["expected_ids"][0].tolist()]
-    # HF prepends decoder_start and stops at eos; compare up to and including first eos
-    assert out[: len(expected)] == expected
+    expected = _D["expected_ids"][0].tolist()       # [decoder_start, ...11 greedy tokens]
+    out = translate(_D["src_ids"], _params(), cfg, max_new_tokens=len(expected) - 1)
+    assert out == expected
 
 
-def test_starts_with_decoder_start_and_stops_at_eos():
+def test_starts_with_decoder_start():
     cfg = _cfg()
-    out = translate(_D["src_ids"], _params(), cfg, max_new_tokens=12)
+    out = translate(_D["src_ids"], _params(), cfg, max_new_tokens=4)
     assert out[0] == cfg.decoder_start_id
-    assert cfg.eos_id in out
+
+
+def test_stops_at_eos():
+    # Deterministically exercise the stop: set eos to the first generated token, so
+    # translate must halt right after emitting it. Uses the same proven logits.
+    import dataclasses
+    expected = _D["expected_ids"][0].tolist()
+    cfg = dataclasses.replace(_cfg(), eos_id=int(expected[1]))
+    out = translate(_D["src_ids"], _params(), cfg, max_new_tokens=12)
+    assert out == [cfg.decoder_start_id, int(expected[1])]
+    assert out[-1] == cfg.eos_id
 ```
 
 Run: `uv run grade 302`
