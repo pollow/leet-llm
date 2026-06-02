@@ -1,6 +1,7 @@
 import pathlib
 
 import numpy as np
+import pytest
 
 from leet_llm.grader import load
 
@@ -53,8 +54,6 @@ def test_stops_at_eos():
     assert out[-1] == cfg.eos_id
 
 
-import pytest
-
 _REAL_W = pathlib.Path(__file__).parent.parent / "opus_mt_en_zh.npz"
 _REAL_REF = FIX / "real_ref.npz"
 
@@ -69,7 +68,8 @@ def test_real_en_zh_matches_hf_greedy():
         d_ff=int(R["d_ff"]), vocab_size=int(R["vocab_size"]), max_pos=int(R["max_pos"]),
         scale_embedding=bool(R["scale_embedding"]), pad_id=int(R["pad_id"]),
         eos_id=int(R["eos_id"]), decoder_start_id=int(R["decoder_start_id"]))
-    params = load_marian({k: np.load(_REAL_W)[k] for k in np.load(_REAL_W).files}, cfg)
+    _W = np.load(_REAL_W)
+    params = load_marian({k: _W[k] for k in _W.files}, cfg)
     out = translate(R["src_ids"], params, cfg, max_new_tokens=64)
     expected = R["expected_ids"][0].tolist()
     assert out[: len(expected)] == expected
