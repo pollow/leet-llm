@@ -30,6 +30,7 @@ Splitting/merging heads is the `(…, L, d) ↔ (…, h, L, d_k)` reshape+transp
 @dataclass(frozen=True)
 class AttnParams:
     Wq: np.ndarray; Wk: np.ndarray; Wv: np.ndarray; Wo: np.ndarray   # each (d, d)
+    bq: np.ndarray | None = None; bk = None; bv = None; bo = None     # optional (d,) biases
 
 def mha(x_q: np.ndarray, params: AttnParams, n_heads: int,
         x_kv: np.ndarray | None = None,
