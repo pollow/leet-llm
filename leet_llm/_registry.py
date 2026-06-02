@@ -92,4 +92,5 @@ REGISTRY: dict[str, tuple[str, str]] = {
     "encoder": ("301_transformer_model", "encoder"),
     "decoder": ("301_transformer_model", "decoder"),
     "transformer_logits": ("301_transformer_model", "transformer_logits"),
+    "translate": ("302_translate", "translate"),
 }

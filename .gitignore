@@ -6,3 +6,6 @@ __pycache__/
 
 # uv / virtualenv
 .venv/
+
+# L3 real model weights (opt-in; run 302_translate/download.sh)
+302_translate/opus_mt_en_zh.npz
