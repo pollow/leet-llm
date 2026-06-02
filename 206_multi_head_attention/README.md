@@ -37,6 +37,8 @@ def mha(x_q: np.ndarray, params: AttnParams, n_heads: int,
 #   x_q: (..., Lq, d)   x_kv: (..., Lk, d) or None   ->   (..., Lq, d)
 ```
 
+`AttnParams` carries optional `bq/bk/bv/bo` biases (default `None` = bias-free, as Llama uses); the classic Transformer passes real biases.
+
 ## Read More
 
 - *Attention Is All You Need*, Vaswani et al. 2017 — §3.2.2: https://arxiv.org/abs/1706.03762

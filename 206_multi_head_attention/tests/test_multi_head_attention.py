@@ -14,7 +14,8 @@ _FIXTURES = sorted(FIX.glob("*.npz"))
 
 
 def _params(d):
-    return AttnParams(Wq=d["Wq"], Wk=d["Wk"], Wv=d["Wv"], Wo=d["Wo"])
+    opt = {k: d[k] for k in ("bq", "bk", "bv", "bo") if k in d.files}
+    return AttnParams(Wq=d["Wq"], Wk=d["Wk"], Wv=d["Wv"], Wo=d["Wo"], **opt)
 
 
 @pytest.mark.parametrize("path", _FIXTURES, ids=[p.stem for p in _FIXTURES])

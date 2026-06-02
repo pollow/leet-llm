@@ -30,16 +30,18 @@ def _merge(t: torch.Tensor) -> torch.Tensor:
     return t.transpose(-3, -2).reshape(*lead, L, H * dk)  # (..., L, d)
 
 
-def _mha_ref(x_q, Wq, Wk, Wv, Wo, n_heads, x_kv=None, mask=None):
+def _mha_ref(x_q, Wq, Wk, Wv, Wo, n_heads, x_kv=None, mask=None,
+             bq=None, bk=None, bv=None, bo=None):
     xq = torch.from_numpy(x_q)
     xkv = torch.from_numpy(x_q if x_kv is None else x_kv)
     Wq, Wk, Wv, Wo = (torch.from_numpy(w) for w in (Wq, Wk, Wv, Wo))
-    qh = _split(F.linear(xq, Wq), n_heads)
-    kh = _split(F.linear(xkv, Wk), n_heads)
-    vh = _split(F.linear(xkv, Wv), n_heads)
+    tb = lambda b: None if b is None else torch.from_numpy(b)
+    qh = _split(F.linear(xq, Wq, tb(bq)), n_heads)
+    kh = _split(F.linear(xkv, Wk, tb(bk)), n_heads)
+    vh = _split(F.linear(xkv, Wv, tb(bv)), n_heads)
     attn_mask = None if mask is None else torch.from_numpy(np.where(mask, -np.inf, 0.0))
     oh = F.scaled_dot_product_attention(qh, kh, vh, attn_mask=attn_mask)
-    return F.linear(_merge(oh), Wo).numpy()
+    return F.linear(_merge(oh), Wo, tb(bo)).numpy()
 
 
 def _causal(n):
@@ -74,6 +76,15 @@ def main() -> None:
             arrays["mask"] = mask
         np.savez(FIX / f"{name}.npz", **arrays)
         print(f"  wrote {name}.npz  x_q{x_q.shape} heads={n_heads} -> out{out.shape}")
+
+    # biased self-attention (classic Transformer / opus-mt path)
+    Wq, Wk, Wv, Wo = Wset()
+    bq, bk, bv, bo = (rng.standard_normal(d) for _ in range(4))
+    x_b = rng.standard_normal((2, 4, d))
+    out_b = _mha_ref(x_b, Wq, Wk, Wv, Wo, 2, bq=bq, bk=bk, bv=bv, bo=bo)
+    np.savez(FIX / "self_biased.npz", x_q=x_b, Wq=Wq, Wk=Wk, Wv=Wv, Wo=Wo,
+             bq=bq, bk=bk, bv=bv, bo=bo, n_heads=np.array(2), out=out_b)
+    print("  wrote self_biased.npz")
 
 
 if __name__ == "__main__":

@@ -32,6 +32,8 @@ def gqa(x: np.ndarray, params: AttnParams, n_heads: int, n_kv_heads: int,
 #   reuses AttnParams (206); here Wk, Wv project to n_kv_heads·d_k   ->   (..., L, d)
 ```
 
+`AttnParams` carries optional `bq/bk/bv/bo` biases (default `None` = bias-free, as Llama uses); the classic Transformer passes real biases.
+
 ## Read More
 
 - *GQA: Training Generalized Multi-Query Transformer Models*, Ainslie et al. 2023: https://arxiv.org/abs/2305.13245

@@ -17,7 +17,8 @@ _FIXTURES = sorted(FIX.glob("*.npz"))
 def test_matches_torch_fixture(path):
     """Frozen goldens from a float64 torch GQA reference (incl. MQA and MHA-equivalent)."""
     d = np.load(path)
-    p = AttnParams(Wq=d["Wq"], Wk=d["Wk"], Wv=d["Wv"], Wo=d["Wo"])
+    opt = {k: d[k] for k in ("bq", "bk", "bv", "bo") if k in d.files}
+    p = AttnParams(Wq=d["Wq"], Wk=d["Wk"], Wv=d["Wv"], Wo=d["Wo"], **opt)
     mask = d["mask"] if "mask" in d.files else None
     out = gqa(d["x"], p, int(d["n_heads"]), int(d["n_kv_heads"]), mask=mask)
     np.testing.assert_allclose(out, d["out"], rtol=1e-9, atol=1e-9)
