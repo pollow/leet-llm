@@ -9,3 +9,4 @@ __pycache__/
 
 # L3 real model weights (opt-in; run 302_translate/download.sh)
 302_translate/opus_mt_en_zh.npz
+303_llama_model/stories15M.model.npz

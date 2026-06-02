@@ -93,4 +93,8 @@ REGISTRY: dict[str, tuple[str, str]] = {
     "decoder": ("301_transformer_model", "decoder"),
     "transformer_logits": ("301_transformer_model", "transformer_logits"),
     "translate": ("302_translate", "translate"),
+    "LlamaConfig": ("303_llama_model", "LlamaConfig"),
+    "LlamaParams": ("303_llama_model", "LlamaParams"),
+    "load_llama": ("303_llama_model", "load_llama"),
+    "llama_forward": ("303_llama_model", "llama_forward"),
 }
