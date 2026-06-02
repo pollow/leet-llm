@@ -11,19 +11,22 @@ import numpy as np
 
 def interleave(a: np.ndarray, b: np.ndarray) -> np.ndarray:
     """Interleave two `(..., m)` arrays into `(..., 2m)`: a0, b0, a1, b1, ..."""
-    raise NotImplementedError("Implement interleave — see 011_interleave_halves/README.md")
+    return np.stack((a, b), axis=-1).reshape(*a.shape[:-1], -1)
 
 
 def deinterleave(x: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     """Inverse of interleave: split `(..., 2m)` into (evens, odds), each `(..., m)`."""
-    raise NotImplementedError("Implement deinterleave — see 011_interleave_halves/README.md")
+    m2 = x.shape[-1]
+    return x[..., :m2:2], x[..., 1:m2:2]
 
 
 def split_halves(x: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     """Split `(..., 2m)` into its front and back halves, each `(..., m)`."""
-    raise NotImplementedError("Implement split_halves — see 011_interleave_halves/README.md")
+    m = x.shape[-1]
+    return x[..., : m // 2], x[..., m//2 :]
+    
 
 
 def join_halves(a: np.ndarray, b: np.ndarray) -> np.ndarray:
     """Inverse of split_halves: concatenate two `(..., m)` arrays along the last axis."""
-    raise NotImplementedError("Implement join_halves — see 011_interleave_halves/README.md")
+    return np.concatenate((a, b), axis=-1)
