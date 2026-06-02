@@ -31,9 +31,10 @@ def test_matches_torch_fixture(path):
     """Frozen golden from a float64 torch Llama block (RMSNorm + RoPE-GQA + SwiGLU)."""
     d = np.load(path)
     L = d["x"].shape[-2]
+    eps = float(d["eps"]) if "eps" in d.files else 1e-5
     out = llama_decoder_block(
         d["x"], _params(d), int(d["n_heads"]), int(d["n_kv_heads"]), d["positions"],
-        mask=_causal(L),
+        mask=_causal(L), eps=eps,
     )
     np.testing.assert_allclose(out, d["out"], rtol=1e-9, atol=1e-9)
 

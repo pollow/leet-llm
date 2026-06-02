@@ -39,6 +39,21 @@ def _rope_i(x, positions, base=10000.0):
     return torch.view_as_real(xc * cis).reshape(x.shape)
 
 
+def _run_block(t, pos, am, n_heads, n_kv_heads, d, eps):
+    a = F.rms_norm(t["x"], (d,), weight=t["attn_norm"], eps=eps)
+    q = _rope_i(_split(F.linear(a, t["Wq"]), n_heads), pos)
+    k = _rope_i(_split(F.linear(a, t["Wk"]), n_kv_heads), pos)
+    v = _split(F.linear(a, t["Wv"]), n_kv_heads)
+    g = n_heads // n_kv_heads
+    k = k.repeat_interleave(g, dim=-3)
+    v = v.repeat_interleave(g, dim=-3)
+    o = F.linear(_merge(F.scaled_dot_product_attention(q, k, v, attn_mask=am)), t["Wo"])
+    h = t["x"] + o
+    f = F.rms_norm(h, (d,), weight=t["ffn_norm"], eps=eps)
+    swiglu = F.linear(F.silu(F.linear(f, t["gate"])) * F.linear(f, t["up"]), t["down"])
+    return (h + swiglu).numpy()
+
+
 def main() -> None:
     FIX.mkdir(exist_ok=True)
     rng = np.random.default_rng(0)
@@ -61,21 +76,18 @@ def main() -> None:
     causal = np.triu(np.ones((L, L), dtype=bool), k=1)
     t = {k: torch.from_numpy(v) for k, v in arr.items() if v.ndim > 0}
     pos = t["positions"]
-    a = F.rms_norm(t["x"], (d,), weight=t["attn_norm"], eps=1e-5)
-    q = _rope_i(_split(F.linear(a, t["Wq"]), n_heads), pos)
-    k = _rope_i(_split(F.linear(a, t["Wk"]), n_kv_heads), pos)
-    v = _split(F.linear(a, t["Wv"]), n_kv_heads)
-    g = n_heads // n_kv_heads
-    k = k.repeat_interleave(g, dim=-3)
-    v = v.repeat_interleave(g, dim=-3)
     am = torch.from_numpy(np.where(causal, -np.inf, 0.0))
-    o = F.linear(_merge(F.scaled_dot_product_attention(q, k, v, attn_mask=am)), t["Wo"])
-    h = t["x"] + o
-    f = F.rms_norm(h, (d,), weight=t["ffn_norm"], eps=1e-5)
-    swiglu = F.linear(F.silu(F.linear(f, t["gate"])) * F.linear(f, t["up"]), t["down"])
-    arr["out"] = (h + swiglu).numpy()
+    arr["out"] = _run_block(t, pos, am, n_heads, n_kv_heads, d, eps=1e-5)
     np.savez(FIX / "basic.npz", **arr)
     print(f"  wrote basic.npz  x{arr['x'].shape} heads={n_heads} kv={n_kv_heads} -> out{arr['out'].shape}")
+
+    # eps=1e-6 case (stories15M / L3 Track B uses this)
+    eps6 = 1e-6
+    arr_eps = dict(arr)
+    arr_eps["out"] = _run_block(t, pos, am, n_heads, n_kv_heads, d, eps=eps6)
+    arr_eps["eps"] = np.float64(eps6)
+    np.savez(FIX / "eps6.npz", **arr_eps)
+    print("  wrote eps6.npz (eps=1e-6)")
 
 
 if __name__ == "__main__":

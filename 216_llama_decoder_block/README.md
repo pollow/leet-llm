@@ -36,9 +36,12 @@ class LlamaBlockParams:
 
 def llama_decoder_block(x: np.ndarray, params: LlamaBlockParams, n_heads: int,
                         n_kv_heads: int, positions: np.ndarray,
-                        mask: np.ndarray | None = None) -> np.ndarray: ...
+                        mask: np.ndarray | None = None,
+                        eps: float = 1e-5) -> np.ndarray: ...
 #   x: (..., L, d)   positions: (L,)   ->   (..., L, d)   (mask defaults to causal)
 ```
+
+`llama_decoder_block` takes an optional `eps` (default `1e-5`) used by both RMSNorms; stories15M / L3 uses `1e-6`.
 
 ## Read More
 

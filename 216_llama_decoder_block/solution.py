@@ -33,8 +33,9 @@ def llama_decoder_block(
     n_kv_heads: int,
     positions: np.ndarray,
     mask: np.ndarray | None = None,
+    eps: float = 1e-5,
 ) -> np.ndarray:
-    """One pre-norm Llama block: RMSNorm -> RoPE-GQA -> residual -> RMSNorm -> SwiGLU -> residual."""
+    """One pre-norm Llama block: RMSNorm(eps) -> RoPE-GQA -> residual -> RMSNorm(eps) -> SwiGLU -> residual."""
     raise NotImplementedError(
         "Implement llama_decoder_block — see 216_llama_decoder_block/README.md"
     )
