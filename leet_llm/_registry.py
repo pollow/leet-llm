@@ -97,4 +97,6 @@ REGISTRY: dict[str, tuple[str, str]] = {
     "LlamaParams": ("303_llama_model", "LlamaParams"),
     "load_llama": ("303_llama_model", "load_llama"),
     "llama_forward": ("303_llama_model", "llama_forward"),
+    "sample": ("304_generate", "sample"),
+    "generate": ("304_generate", "generate"),
 }
