@@ -7,13 +7,15 @@ Run `uv run grade 202` to check your work.
 from __future__ import annotations
 
 import numpy as np
+from scipy.special import erf
 
 
 def gelu(x: np.ndarray) -> np.ndarray:
     """Exact GELU: ``x · ½ · (1 + erf(x / √2))``."""
-    raise NotImplementedError("Implement gelu — see 202_activations/README.md")
+    return x * 0.5 * (1 + erf(x / np.sqrt(2)))
 
 
 def silu(x: np.ndarray) -> np.ndarray:
     """SiLU / swish: ``x · sigmoid(x)``."""
-    raise NotImplementedError("Implement silu — see 202_activations/README.md")
+    sig = 1 / (1 + np.exp(-x))
+    return x * sig

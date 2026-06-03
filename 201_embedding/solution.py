@@ -13,4 +13,4 @@ import numpy as np
 
 def embedding(ids: np.ndarray, table: np.ndarray) -> np.ndarray:
     """Look up rows of ``table`` (V, d) by integer ``ids`` (...), returning (..., d)."""
-    raise NotImplementedError("Implement embedding — see 201_embedding/README.md")
+    return table[ids]

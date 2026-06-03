@@ -20,6 +20,26 @@ SiLU(x) = x · σ(x)
 
 Use the **exact** GELU (via `erf`), not the tanh approximation.
 
+### Why erf? The intuition behind GELU
+
+GELU uses the Gaussian CDF `Φ(x)` as a smooth "gate" that determines how much of the
+input to pass through:
+
+- **For large positive x**: `Φ(x) → 1`, so `GELU(x) ≈ x` (identity, passes through unchanged)
+- **For large negative x**: `Φ(x) → 0`, so `GELU(x) ≈ 0` (blocks negative values)
+- **Near zero**: smooth S-shaped transition, unlike ReLU's sharp kink at 0
+
+This probabilistic gating (from the normal distribution) gives GELU three key advantages
+over ReLU:
+
+1. **Smoothness everywhere**: Differentiable at 0 (ReLU has a non-differentiable kink),
+   which helps gradient-based optimization
+2. **Non-zero gradients for negatives**: Small negative inputs get small but non-zero
+   gradients, preventing "dead neurons" that can occur with ReLU
+3. **Stochastic interpretation**: Can be viewed as randomly dropping inputs with
+   probability `1 - Φ(x)` — inputs are kept with probability proportional to their
+   magnitude, providing a form of adaptive regularization
+
 ## Function Signature
 
 ```python
