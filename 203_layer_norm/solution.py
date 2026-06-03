@@ -15,4 +15,9 @@ def layer_norm(
     x: np.ndarray, gamma: np.ndarray, beta: np.ndarray, eps: float = 1e-5
 ) -> np.ndarray:
     """LayerNorm over the last axis: ``gamma * (x - mean) / sqrt(var + eps) + beta``."""
-    raise NotImplementedError("Implement layer_norm — see 203_layer_norm/README.md")
+    return (
+        gamma
+        * (x - x.mean(axis=-1, keepdims=True))
+        / np.sqrt(x.var(axis=-1, keepdims=True) + eps)
+        + beta
+    )
