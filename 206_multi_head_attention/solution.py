@@ -13,6 +13,8 @@ from dataclasses import dataclass
 
 import numpy as np
 
+from leet_llm import affine, group_last_axis, sdpa, ungroup_last_axis
+
 
 @dataclass(frozen=True)
 class AttnParams:
@@ -44,6 +46,17 @@ def mha(
 
     Apply the optional ``params.bq/bk/bv/bo`` to the q/k/v/out projections when present (treat ``None`` as zero).
     """
-    raise NotImplementedError(
-        "Implement mha — see 206_multi_head_attention/README.md"
-    )
+    if x_kv is None:
+        x_kv = x_q
+
+    Q = affine(x_q, params.Wq, params.bq)  # [batch_size, seq_len, d_model]
+    K = affine(x_kv, params.Wk, params.bk)
+    V = affine(x_kv, params.Wv, params.bv)
+
+    Q = group_last_axis(Q, n_heads)  # [batch_size, n_heads, seq_len, dim_head]
+    K = group_last_axis(K, n_heads)
+    V = group_last_axis(V, n_heads)
+
+    mha = ungroup_last_axis(sdpa(Q, K, V, mask))
+
+    return affine(mha, params.Wo, params.bo)
