@@ -13,6 +13,8 @@ from dataclasses import dataclass
 
 import numpy as np
 
+from leet_llm import mha, ffn, layer_norm, add_residual, triangular_mask, AttnParams, FFNParams
+
 
 @dataclass(frozen=True)
 class GPTBlockParams:
@@ -33,4 +35,22 @@ def gpt_block(
     mask: np.ndarray | None = None,
 ) -> np.ndarray:
     """One pre-norm GPT block: h = x + Attn(LN(x)); y = h + FFN(LN(h))."""
-    raise NotImplementedError("Implement gpt_block — see 211_gpt_block/README.md")
+    if mask is None:
+        mask = triangular_mask(x.shape[-2])
+    h = add_residual(
+        x, 
+        mha(
+            layer_norm(x, params.norm1_gamma, params.norm1_beta),
+            params.attn,
+            n_heads,
+            mask=mask,
+        ),
+    )
+    y = add_residual(
+        h,
+        ffn(
+            layer_norm(h, params.norm2_gamma, params.norm2_beta),
+            params.ffn
+        )
+    )
+    return y

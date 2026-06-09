@@ -12,6 +12,8 @@ from dataclasses import dataclass
 
 import numpy as np
 
+from leet_llm import affine, gelu
+
 
 @dataclass(frozen=True)
 class FFNParams:
@@ -25,4 +27,7 @@ class FFNParams:
 
 def ffn(x: np.ndarray, params: FFNParams) -> np.ndarray:
     """Classic FFN: ``gelu(x @ W1.T + b1) @ W2.T + b2``."""
-    raise NotImplementedError("Implement ffn — see 207_feed_forward/README.md")
+    x = affine(x, params.W1, params.b1)
+    x = gelu(x)
+    x = affine(x, params.W2, params.b2)
+    return x

@@ -13,6 +13,8 @@ from dataclasses import dataclass
 
 import numpy as np
 
+from leet_llm import AttnParams, FFNParams, mha, ffn, layer_norm, add_residual, triangular_mask
+
 
 @dataclass(frozen=True)
 class DecoderBlockParams:
@@ -38,6 +40,9 @@ def decoder_block(
     cross_mask: np.ndarray | None = None,
 ) -> np.ndarray:
     """One post-norm decoder block: masked self-attn -> cross-attn -> FFN."""
-    raise NotImplementedError(
-        "Implement decoder_block — see 210_decoder_block/README.md"
-    )
+    a = mha(x, params.self_attn, n_heads, mask=self_mask)
+    a = layer_norm(add_residual(x, a), params.norm1_gamma, params.norm1_beta)
+    b = mha(a, params.cross_attn, n_heads, mask=cross_mask, x_kv=enc_out)
+    b = layer_norm(add_residual(a, b), params.norm2_gamma, params.norm2_beta)
+    y = layer_norm(b + ffn(b, params.ffn), params.norm3_gamma, params.norm3_beta)
+    return y

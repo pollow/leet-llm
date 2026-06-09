@@ -13,6 +13,8 @@ from dataclasses import dataclass
 
 import numpy as np
 
+from leet_llm import AttnParams, FFNParams, mha, add_residual, ffn, layer_norm
+
 
 @dataclass(frozen=True)
 class EncoderBlockParams:
@@ -33,6 +35,9 @@ def encoder_block(
     mask: np.ndarray | None = None,
 ) -> np.ndarray:
     """One post-norm encoder block: LN(x + SelfAttn(x)) then LN(a + FFN(a))."""
-    raise NotImplementedError(
-        "Implement encoder_block — see 209_encoder_block/README.md"
-    )
+    a = mha(x, params.attn, n_heads, mask=mask)
+    a = layer_norm(add_residual(x, a), params.norm1_gamma, params.norm1_beta)
+    y = ffn(a, params.ffn)
+    y = layer_norm(add_residual(y, a), params.norm2_gamma, params.norm2_beta)
+    return y 
+    

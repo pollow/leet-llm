@@ -12,4 +12,5 @@ import numpy as np
 
 def add_residual(x: np.ndarray, sublayer_out: np.ndarray) -> np.ndarray:
     """Residual connection: ``x + sublayer_out``."""
-    raise NotImplementedError("Implement add_residual — see 208_residual_norm/README.md")
+    assert x.shape == sublayer_out.shape
+    return x + sublayer_out
