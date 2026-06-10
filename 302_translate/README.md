@@ -4,31 +4,23 @@
 
 ## Description
 
-Implement the greedy decoding loop that drives the encoder-decoder Transformer you built
-in task 301. Encode the source sequence once, then autoregressively sample target tokens
-by taking the argmax of the last-position logits — stopping when the model emits `eos_id`
-or the budget is exhausted. This is **stateless recompute**: no KV-cache; the full prefix
-is reprocessed at each step (KV-caching is L4).
+Implement greedy decoding for the encoder-decoder Transformer from task 301.
+Starting from `decoder_start_id`, repeatedly pick the highest-probability next token
+until `eos_id` or a step budget is reached. This is **stateless recompute**: no KV-cache;
+the full target prefix is reprocessed each step (KV-caching is L4).
 
 ## The algorithm (problem spec)
 
-```
-ids = [decoder_start_id]
-encode the source once → memory
+Initialize the output with the start token, then loop:
 
-repeat up to max_new_tokens times:
-    tgt = array([ids])                          # shape (1, current_len)
-    logits = transformer_logits(src_ids, tgt, params, cfg)   # (1, t, V)
-    next_id = argmax(logits[0, -1])             # scalar int
-    ids.append(next_id)
-    if next_id == eos_id: break
-
-return ids   # includes decoder_start_id; includes eos_id if produced
-```
+1. Form the current target prefix as a batch of shape `(1, t)`.
+2. Run the full 301 forward to get vocabulary logits.
+3. Take argmax over the last position to choose the next token id.
+4. Append it; stop on `eos_id` or after `max_new_tokens` steps.
+5. Return the id list including start token and eos if produced.
 
 The returned list always starts with `decoder_start_id`. It ends with `eos_id` when the
-model produces it within the budget; otherwise it ends with the last token before the
-budget ran out.
+model produces it within budget; otherwise it ends at the budget limit.
 
 ## HF facts (GIVEN — framework plumbing)
 
@@ -41,11 +33,17 @@ budget ran out.
 ## Run it for real
 
 First fetch the real `Helsinki-NLP/opus-mt-en-zh` weights (CC-BY-4.0, Helsinki-NLP /
-OPUS-MT; weights are **not** committed — this is opt-in):
+OPUS-MT; weights are **not** committed — this is opt-in). This downloads only the
+PyTorch weights, tokenizer and config (~315 MB), not the TF / Flax / Rust copies:
 
 ```bash
-bash 302_translate/download.sh
+uv sync --group gen
+uv run --group gen python 302_translate/convert.py
+# -> writes 302_translate/opus_mt_en_zh.npz  (~300 MB)  and tests/fixtures/real_ref.npz
 ```
+
+If you see `MarianTokenizer requires SentencePiece`, run `uv add --group gen sentencepiece`
+or `uv pip install sentencepiece` once — it is now listed in pyproject.toml gen group.
 
 Then translate a sentence:
 
@@ -85,6 +83,11 @@ def translate(src_ids: np.ndarray, params, cfg, max_new_tokens: int = 64) -> lis
 #   cfg: TransformerConfig (from leet_llm import TransformerConfig)
 #   returns: list of int token ids, starting with cfg.decoder_start_id
 ```
+
+## Hints
+
+* `transformer_logits` from task 301 already wraps encoder + decoder + LM head, so the loop only needs src_ids, current tgt prefix, params, cfg. No separate memory argument is exposed.
+* Conceptually the encoder output depends only on src and could be computed once, but the 301 API recomputes it each step as part of stateless recompute; this is intentional for L3 simplicity and does not affect correctness. KV-cache in L4 refers to decoder self-attention history, not encoder memory.
 
 ## How to Test
 

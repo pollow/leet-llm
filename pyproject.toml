@@ -31,6 +31,8 @@ dev = [
 gen = [
     "torch>=2.0",
     "transformers>=4.40",
+    "sentencepiece>=0.1.99",
+    "huggingface_hub>=0.20",
 ]
 
 # Torch also returns for the PyTorch phase (L5-L6); kept out of the default deps so the
