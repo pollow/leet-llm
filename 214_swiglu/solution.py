@@ -12,6 +12,8 @@ from dataclasses import dataclass
 
 import numpy as np
 
+from leet_llm import silu
+
 
 @dataclass(frozen=True)
 class SwiGLUParams:
@@ -24,4 +26,4 @@ class SwiGLUParams:
 
 def swiglu_ffn(x: np.ndarray, params: SwiGLUParams) -> np.ndarray:
     """SwiGLU FFN: ``(silu(x @ W1.T) * (x @ W3.T)) @ W2.T``."""
-    raise NotImplementedError("Implement swiglu_ffn — see 214_swiglu/README.md")
+    return (silu(x @ params.W1.T) * (x @ params.W3.T)) @ params.W2.T
