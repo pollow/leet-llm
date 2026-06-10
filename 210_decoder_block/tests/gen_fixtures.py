@@ -38,9 +38,10 @@ def _mha(x_q, W, h, x_kv=None, mask=None):
     return F.linear(_merge(F.scaled_dot_product_attention(q, k, v, attn_mask=am)), Wo)
 
 
-def _ffn(x, W):
+def _ffn(x, W, act="gelu"):
     W1, b1, W2, b2 = W
-    return F.linear(F.gelu(F.linear(x, W1, b1)), W2, b2)
+    fn = {"gelu": F.gelu, "silu": F.silu, "swish": F.silu, "relu": F.relu}[act]
+    return F.linear(fn(F.linear(x, W1, b1)), W2, b2)
 
 
 def _ln(x, g, b):
@@ -55,29 +56,50 @@ def main() -> None:
     def W():
         return rng.standard_normal((d, d))
 
-    arr = {
-        "x": rng.standard_normal((B, L, d)),
-        "enc_out": rng.standard_normal((B, Lenc, d)),
-        "sWq": W(), "sWk": W(), "sWv": W(), "sWo": W(),
-        "cWq": W(), "cWk": W(), "cWv": W(), "cWo": W(),
-        "W1": rng.standard_normal((d_ff, d)), "b1": rng.standard_normal(d_ff),
-        "W2": rng.standard_normal((d, d_ff)), "b2": rng.standard_normal(d),
-        "n1g": rng.standard_normal(d), "n1b": rng.standard_normal(d),
-        "n2g": rng.standard_normal(d), "n2b": rng.standard_normal(d),
-        "n3g": rng.standard_normal(d), "n3b": rng.standard_normal(d),
+    base = {
+        "sWq": W(),
+        "sWk": W(),
+        "sWv": W(),
+        "sWo": W(),
+        "cWq": W(),
+        "cWk": W(),
+        "cWv": W(),
+        "cWo": W(),
+        "W1": rng.standard_normal((d_ff, d)),
+        "b1": rng.standard_normal(d_ff),
+        "W2": rng.standard_normal((d, d_ff)),
+        "b2": rng.standard_normal(d),
+        "n1g": rng.standard_normal(d),
+        "n1b": rng.standard_normal(d),
+        "n2g": rng.standard_normal(d),
+        "n2b": rng.standard_normal(d),
+        "n3g": rng.standard_normal(d),
+        "n3b": rng.standard_normal(d),
         "n_heads": np.array(n_heads),
     }
     causal = np.triu(np.ones((L, L), dtype=bool), k=1)
-    t = {k: torch.from_numpy(v) for k, v in arr.items() if v.ndim > 0}
-    sW = (t["sWq"], t["sWk"], t["sWv"], t["sWo"])
-    cW = (t["cWq"], t["cWk"], t["cWv"], t["cWo"])
-    fW = (t["W1"], t["b1"], t["W2"], t["b2"])
-    a = _ln(t["x"] + _mha(t["x"], sW, n_heads, mask=causal), t["n1g"], t["n1b"])
-    b = _ln(a + _mha(a, cW, n_heads, x_kv=t["enc_out"]), t["n2g"], t["n2b"])
-    y = _ln(b + _ffn(b, fW), t["n3g"], t["n3b"])
-    arr["out"] = y.numpy()
-    np.savez(FIX / "basic.npz", **arr)
-    print(f"  wrote basic.npz  x{arr['x'].shape} enc{arr['enc_out'].shape} -> out{arr['out'].shape}")
+    for act in ("gelu", "silu"):
+        arr = base.copy()
+        arr["x"] = rng.standard_normal((B, L, d))
+        arr["enc_out"] = rng.standard_normal((B, Lenc, d))
+        arr["activation"] = np.array(act)
+        t = {
+            k: torch.from_numpy(v)
+            for k, v in arr.items()
+            if isinstance(v, np.ndarray) and v.ndim > 0
+        }
+        sW = (t["sWq"], t["sWk"], t["sWv"], t["sWo"])
+        cW = (t["cWq"], t["cWk"], t["cWv"], t["cWo"])
+        fW = (t["W1"], t["b1"], t["W2"], t["b2"])
+        a = _ln(t["x"] + _mha(t["x"], sW, n_heads, mask=causal), t["n1g"], t["n1b"])
+        b = _ln(a + _mha(a, cW, n_heads, x_kv=t["enc_out"]), t["n2g"], t["n2b"])
+        y = _ln(b + _ffn(b, fW, act), t["n3g"], t["n3b"])
+        arr["out"] = y.numpy()
+        name = "basic" if act == "gelu" else "silu_basic"
+        np.savez(FIX / f"{name}.npz", **arr)
+        print(
+            f"  wrote {name}.npz  x{arr['x'].shape} enc{arr['enc_out'].shape} -> out{arr['out'].shape} act={act}"
+        )
 
 
 if __name__ == "__main__":

@@ -3,7 +3,7 @@
 Implement ``ffn`` (and the ``FFNParams`` container). See README.md for details.
 Run `uv run grade 207` to check your work.
 
-Hint: reuse ``from leet_llm import affine, gelu`` (003, 202).
+Hint: reuse ``from leet_llm import affine, gelu, silu`` (003, 202).
 """
 
 from __future__ import annotations
@@ -12,7 +12,11 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from leet_llm import affine, gelu
+from leet_llm import affine, gelu, silu
+
+
+def relu(x: np.ndarray) -> np.ndarray:
+    return np.maximum(0, x)
 
 
 @dataclass(frozen=True)
@@ -25,9 +29,19 @@ class FFNParams:
     b2: np.ndarray  # (d,)
 
 
-def ffn(x: np.ndarray, params: FFNParams) -> np.ndarray:
-    """Classic FFN: ``gelu(x @ W1.T + b1) @ W2.T + b2``."""
+def _act(x: np.ndarray, name: str) -> np.ndarray:
+    if name in ("gelu", "gelu_new", "gelu_pytorch_tanh"):
+        return gelu(x)
+    if name in ("relu",):
+        return relu(x)
+    if name in ("silu", "swish"):
+        return silu(x)
+    raise ValueError(f"unsupported activation {name}")
+
+
+def ffn(x: np.ndarray, params: FFNParams, activation: str = "gelu") -> np.ndarray:
+    """Classic FFN with configurable activation."""
     x = affine(x, params.W1, params.b1)
-    x = gelu(x)
+    x = _act(x, activation)
     x = affine(x, params.W2, params.b2)
     return x

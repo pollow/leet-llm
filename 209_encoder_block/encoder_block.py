@@ -31,8 +31,9 @@ def encoder_block(
     params: EncoderBlockParams,
     n_heads: int,
     mask: np.ndarray | None = None,
+    activation: str = "gelu",
 ) -> np.ndarray:
-    """One post-norm encoder block: LN(x + SelfAttn(x)) then LN(a + FFN(a))."""
+    """One post-norm encoder block: LN(x + SelfAttn(x)) then LN(a + FFN(a, activation))."""
     raise NotImplementedError(
         "Implement encoder_block — see 209_encoder_block/README.md"
     )

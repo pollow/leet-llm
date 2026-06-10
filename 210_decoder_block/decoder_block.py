@@ -36,8 +36,9 @@ def decoder_block(
     n_heads: int,
     self_mask: np.ndarray | None = None,
     cross_mask: np.ndarray | None = None,
+    activation: str = "gelu",
 ) -> np.ndarray:
-    """One post-norm decoder block: masked self-attn -> cross-attn -> FFN."""
+    """One post-norm decoder block: masked self-attn -> cross-attn -> FFN(activation)."""
     raise NotImplementedError(
         "Implement decoder_block — see 210_decoder_block/README.md"
     )

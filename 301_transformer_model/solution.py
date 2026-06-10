@@ -16,16 +16,7 @@ from dataclasses import dataclass
 import numpy as np
 
 from leet_llm import EncoderBlockParams, DecoderBlockParams, AttnParams, FFNParams
-from leet_llm import (
-    triangular_mask,
-    embedding,
-    mha,
-    layer_norm,
-    add_residual,
-    affine,
-    encoder_block,
-    decoder_block,
-)
+from leet_llm import triangular_mask, embedding, encoder_block, decoder_block
 
 
 @dataclass(frozen=True)
@@ -42,6 +33,7 @@ class TransformerConfig:
     pad_id: int = 0
     eos_id: int = 0
     decoder_start_id: int = 0
+    activation: str = "gelu"
 
 
 @dataclass(frozen=True)
@@ -159,8 +151,9 @@ def encoder(
     L = src_ids.shape[-1]
     h = emb + params.enc_pos[np.arange(L)]
 
+    act = getattr(cfg, "activation", "gelu")
     for i in range(cfg.n_enc_layers):
-        h = encoder_block(h, params.enc_layers[i], cfg.n_heads)
+        h = encoder_block(h, params.enc_layers[i], cfg.n_heads, activation=act)
 
     return h
 
@@ -179,8 +172,11 @@ def decoder(
     h = emb + params.dec_pos[np.arange(L)]
 
     causal_mask = triangular_mask(L)
+    act = getattr(cfg, "activation", "gelu")
     for i in range(cfg.n_dec_layers):
-        h = decoder_block( h, memory, params.dec_layers[i], cfg.n_heads, causal_mask)
+        h = decoder_block(
+            h, memory, params.dec_layers[i], cfg.n_heads, causal_mask, activation=act
+        )
 
     return h
 

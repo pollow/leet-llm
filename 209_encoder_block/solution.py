@@ -33,11 +33,11 @@ def encoder_block(
     params: EncoderBlockParams,
     n_heads: int,
     mask: np.ndarray | None = None,
+    activation: str = "gelu",
 ) -> np.ndarray:
-    """One post-norm encoder block: LN(x + SelfAttn(x)) then LN(a + FFN(a))."""
+    """One post-norm encoder block: LN(x + SelfAttn(x)) then LN(a + FFN(a, activation))."""
     a = mha(x, params.attn, n_heads, mask=mask)
     a = layer_norm(add_residual(x, a), params.norm1_gamma, params.norm1_beta)
-    y = ffn(a, params.ffn)
-    y = layer_norm(add_residual(y, a), params.norm2_gamma, params.norm2_beta)
-    return y 
-    
+    y = ffn(a, params.ffn, activation=activation)
+    y = layer_norm(add_residual(a, y), params.norm2_gamma, params.norm2_beta)
+    return y

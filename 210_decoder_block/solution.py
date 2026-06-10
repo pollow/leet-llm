@@ -13,7 +13,15 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from leet_llm import AttnParams, FFNParams, mha, ffn, layer_norm, add_residual, triangular_mask
+from leet_llm import (
+    AttnParams,
+    FFNParams,
+    mha,
+    ffn,
+    layer_norm,
+    add_residual,
+    triangular_mask,
+)
 
 
 @dataclass(frozen=True)
@@ -38,11 +46,13 @@ def decoder_block(
     n_heads: int,
     self_mask: np.ndarray | None = None,
     cross_mask: np.ndarray | None = None,
+    activation: str = "gelu",
 ) -> np.ndarray:
-    """One post-norm decoder block: masked self-attn -> cross-attn -> FFN."""
+    """One post-norm decoder block: masked self-attn -> cross-attn -> FFN(activation)."""
     a = mha(x, params.self_attn, n_heads, mask=self_mask)
     a = layer_norm(add_residual(x, a), params.norm1_gamma, params.norm1_beta)
     b = mha(a, params.cross_attn, n_heads, mask=cross_mask, x_kv=enc_out)
     b = layer_norm(add_residual(a, b), params.norm2_gamma, params.norm2_beta)
-    y = layer_norm(b + ffn(b, params.ffn), params.norm3_gamma, params.norm3_beta)
+    y = ffn(b, params.ffn, activation=activation)
+    y = layer_norm(add_residual(b, y), params.norm3_gamma, params.norm3_beta)
     return y

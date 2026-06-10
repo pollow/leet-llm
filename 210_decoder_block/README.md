@@ -36,8 +36,10 @@ class DecoderBlockParams:
 
 def decoder_block(x: np.ndarray, enc_out: np.ndarray, params: DecoderBlockParams,
                   n_heads: int, self_mask: np.ndarray | None = None,
-                  cross_mask: np.ndarray | None = None) -> np.ndarray: ...
+                  cross_mask: np.ndarray | None = None,
+                  activation: str = "gelu") -> np.ndarray: ...
 #   x: (..., L, d)   enc_out: (..., L_enc, d)   ->   (..., L, d)
+#   activation passed through to ffn; default "gelu"
 ```
 
 ## Read More

@@ -31,8 +31,10 @@ class EncoderBlockParams:
     norm2_gamma: np.ndarray; norm2_beta: np.ndarray
 
 def encoder_block(x: np.ndarray, params: EncoderBlockParams, n_heads: int,
-                  mask: np.ndarray | None = None) -> np.ndarray: ...
+                  mask: np.ndarray | None = None,
+                  activation: str = "gelu") -> np.ndarray: ...
 #   x: (..., L, d)   ->   (..., L, d)
+#   activation passed through to ffn; default "gelu" for backward compat.
 ```
 
 ## Read More

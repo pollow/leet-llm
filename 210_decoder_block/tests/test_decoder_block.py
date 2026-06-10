@@ -23,9 +23,12 @@ def _params(d):
         self_attn=AttnParams(Wq=d["sWq"], Wk=d["sWk"], Wv=d["sWv"], Wo=d["sWo"]),
         cross_attn=AttnParams(Wq=d["cWq"], Wk=d["cWk"], Wv=d["cWv"], Wo=d["cWo"]),
         ffn=FFNParams(W1=d["W1"], b1=d["b1"], W2=d["W2"], b2=d["b2"]),
-        norm1_gamma=d["n1g"], norm1_beta=d["n1b"],
-        norm2_gamma=d["n2g"], norm2_beta=d["n2b"],
-        norm3_gamma=d["n3g"], norm3_beta=d["n3b"],
+        norm1_gamma=d["n1g"],
+        norm1_beta=d["n1b"],
+        norm2_gamma=d["n2g"],
+        norm2_beta=d["n2b"],
+        norm3_gamma=d["n3g"],
+        norm3_beta=d["n3b"],
     )
 
 
@@ -34,12 +37,31 @@ def test_matches_torch_fixture(path):
     """Frozen golden from a float64 torch seq2seq decoder block (masked self + cross + FFN)."""
     d = np.load(path)
     L = d["x"].shape[-2]
-    out = decoder_block(d["x"], d["enc_out"], _params(d), int(d["n_heads"]), self_mask=_causal(L))
+    act = str(d["activation"].item()) if "activation" in d else "gelu"
+    out = decoder_block(
+        d["x"],
+        d["enc_out"],
+        _params(d),
+        int(d["n_heads"]),
+        self_mask=_causal(L),
+        activation=act,
+    )
     np.testing.assert_allclose(out, d["out"], rtol=1e-9, atol=1e-9)
 
 
 def test_shape_preserved():
     d = np.load(_FIXTURES[0])
     L = d["x"].shape[-2]
-    out = decoder_block(d["x"], d["enc_out"], _params(d), int(d["n_heads"]), self_mask=_causal(L))
+    out = decoder_block(
+        d["x"], d["enc_out"], _params(d), int(d["n_heads"]), self_mask=_causal(L)
+    )
     assert out.shape == d["x"].shape
+    out2 = decoder_block(
+        d["x"],
+        d["enc_out"],
+        _params(d),
+        int(d["n_heads"]),
+        self_mask=_causal(L),
+        activation="silu",
+    )
+    assert out2.shape == d["x"].shape

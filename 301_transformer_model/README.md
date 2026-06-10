@@ -105,6 +105,7 @@ class TransformerConfig:
     d_ff: int; vocab_size: int; max_pos: int
     scale_embedding: bool = False; eps: float = 1e-5
     pad_id: int = 0; eos_id: int = 0; decoder_start_id: int = 0
+    activation: str = "gelu"   # "gelu" for Vaswani original, "swish"/"silu" for MarianMT
 
 @dataclass(frozen=True)
 class MarianParams:

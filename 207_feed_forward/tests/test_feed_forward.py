@@ -15,14 +15,17 @@ _FIXTURES = sorted(FIX.glob("*.npz"))
 
 @pytest.mark.parametrize("path", _FIXTURES, ids=[p.stem for p in _FIXTURES])
 def test_matches_torch_fixture(path):
-    """Frozen goldens from float64 torch: gelu(x@W1.T + b1) @ W2.T + b2."""
+    """Frozen goldens from float64 torch: act(x@W1.T + b1) @ W2.T + b2."""
     d = np.load(path)
     p = FFNParams(W1=d["W1"], b1=d["b1"], W2=d["W2"], b2=d["b2"])
-    np.testing.assert_allclose(ffn(d["x"], p), d["out"], rtol=1e-9, atol=1e-9)
+    act = str(d["activation"].item()) if "activation" in d else "gelu"
+    np.testing.assert_allclose(
+        ffn(d["x"], p, activation=act), d["out"], rtol=1e-9, atol=1e-9
+    )
 
 
 def test_zero_first_layer_returns_b2():
-    # W1=0, b1=0 -> gelu(0)=0 -> out = 0 @ W2.T + b2 == b2
+    # W1=0, b1=0 -> act(0)=0 -> out = 0 @ W2.T + b2 == b2 ; test both gelu and silu
     rng = np.random.default_rng(0)
     d, d_ff = 5, 7
     p = FFNParams(
@@ -32,7 +35,10 @@ def test_zero_first_layer_returns_b2():
         b2=rng.standard_normal(d),
     )
     x = rng.standard_normal((3, d))
-    np.testing.assert_allclose(ffn(x, p), np.broadcast_to(p.b2, (3, d)), atol=1e-12)
+    for act in ("gelu", "silu", "swish", "relu"):
+        np.testing.assert_allclose(
+            ffn(x, p, activation=act), np.broadcast_to(p.b2, (3, d)), atol=1e-12
+        )
 
 
 def test_shape_preserved():
@@ -44,4 +50,5 @@ def test_shape_preserved():
         W2=rng.standard_normal((d, d_ff)),
         b2=rng.standard_normal(d),
     )
-    assert ffn(rng.standard_normal((2, 4, d)), p).shape == (2, 4, d)
+    for act in ("gelu", "silu", "relu"):
+        assert ffn(rng.standard_normal((2, 4, d)), p, activation=act).shape == (2, 4, d)
