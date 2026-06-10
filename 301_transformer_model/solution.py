@@ -15,6 +15,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
+from leet_llm import EncoderBlockParams, DecoderBlockParams, AttnParams, FFNParams
 
 @dataclass(frozen=True)
 class TransformerConfig:
@@ -38,15 +39,84 @@ class MarianParams:
     dec_embed: np.ndarray            # (V, d)
     enc_pos: np.ndarray              # (P, d) fixed sinusoidal table
     dec_pos: np.ndarray              # (P, d)
-    enc_layers: list                 # list[EncoderBlockParams] (from leet_llm import EncoderBlockParams)
-    dec_layers: list                 # list[DecoderBlockParams]
+    enc_layers: list[EncoderBlockParams]
+    dec_layers: list[DecoderBlockParams]
     lm_head: np.ndarray              # (V, d), tied to shared embedding
     final_logits_bias: np.ndarray    # (V,)
 
 
 def load_marian(weights: dict, cfg: TransformerConfig) -> MarianParams:
     """Map a dict of HF-named arrays (see README table) into MarianParams."""
-    raise NotImplementedError("Implement load_marian — see 301_transformer_model/README.md")
+    marian_params = MarianParams(
+        enc_embed=weights["model.encoder.embed_tokens.weight"],
+        dec_embed=weights["model.decoder.embed_tokens.weight"],
+        enc_pos=weights["model.encoder.embed_positions.weight"],
+        dec_pos=weights["model.decoder.embed_positions.weight"],
+        enc_layers=[
+            EncoderBlockParams(
+                attn=AttnParams(
+                    Wq=weights[f"model.encoder.layers.{i}.self_attn.q_proj.weight"],
+                    bq=weights[f"model.encoder.layers.{i}.self_attn.q_proj.bias"],
+                    Wk=weights[f"model.encoder.layers.{i}.self_attn.k_proj.weight"],
+                    bk=weights[f"model.encoder.layers.{i}.self_attn.k_proj.bias"],
+                    Wv=weights[f"model.encoder.layers.{i}.self_attn.v_proj.weight"],
+                    bv=weights[f"model.encoder.layers.{i}.self_attn.v_proj.bias"],
+                    Wo=weights[f"model.encoder.layers.{i}.self_attn.out_proj.weight"],
+                    bo=weights[f"model.encoder.layers.{i}.self_attn.out_proj.bias"],
+                ),
+                norm1_gamma=weights[f"model.encoder.layers.{i}.self_attn_layer_norm.weight"],
+                norm1_beta=weights[f"model.encoder.layers.{i}.self_attn_layer_norm.bias"],
+                ffn=FFNParams(
+                    W1=weights[f"model.encoder.layers.{i}.fc1.weight"],
+                    b1=weights[f"model.encoder.layers.{i}.fc1.bias"],
+                    W2=weights[f"model.encoder.layers.{i}.fc2.weight"],
+                    b2=weights[f"model.encoder.layers.{i}.fc2.bias"],
+                ),
+                norm2_gamma=weights[f"model.encoder.layers.{i}.final_layer_norm.weight"],
+                norm2_beta=weights[f"model.encoder.layers.{i}.final_layer_norm.bias"],
+            )
+            for i in range(cfg.n_enc_layers)
+        ],
+        dec_layers=[
+            DecoderBlockParams(
+                self_attn=AttnParams(
+                    Wq=weights[f"model.decoder.layers.{i}.self_attn.q_proj.weight"],
+                    bq=weights[f"model.decoder.layers.{i}.self_attn.q_proj.bias"],
+                    Wk=weights[f"model.decoder.layers.{i}.self_attn.k_proj.weight"],
+                    bk=weights[f"model.decoder.layers.{i}.self_attn.k_proj.bias"],
+                    Wv=weights[f"model.decoder.layers.{i}.self_attn.v_proj.weight"],
+                    bv=weights[f"model.decoder.layers.{i}.self_attn.v_proj.bias"],
+                    Wo=weights[f"model.decoder.layers.{i}.self_attn.out_proj.weight"],
+                    bo=weights[f"model.decoder.layers.{i}.self_attn.out_proj.bias"],
+                ),
+                cross_attn=AttnParams(
+                    Wq=weights[f"model.decoder.layers.{i}.encoder_attn.q_proj.weight"],
+                    bq=weights[f"model.decoder.layers.{i}.encoder_attn.q_proj.bias"],
+                    Wk=weights[f"model.decoder.layers.{i}.encoder_attn.k_proj.weight"],
+                    bk=weights[f"model.decoder.layers.{i}.encoder_attn.k_proj.bias"],
+                    Wv=weights[f"model.decoder.layers.{i}.encoder_attn.v_proj.weight"],
+                    bv=weights[f"model.decoder.layers.{i}.encoder_attn.v_proj.bias"],
+                    Wo=weights[f"model.decoder.layers.{i}.encoder_attn.out_proj.weight"],
+                    bo=weights[f"model.decoder.layers.{i}.encoder_attn.out_proj.bias"],
+                ),
+                ffn=FFNParams(
+                    W1=weights[f"model.decoder.layers.{i}.fc1.weight"],
+                    b1=weights[f"model.decoder.layers.{i}.fc1.bias"],
+                    W2=weights[f"model.decoder.layers.{i}.fc2.weight"],
+                    b2=weights[f"model.decoder.layers.{i}.fc2.bias"],
+                ),
+                norm1_gamma=weights[f"model.decoder.layers.{i}.self_attn_layer_norm.weight"],
+                norm1_beta=weights[f"model.decoder.layers.{i}.self_attn_layer_norm.bias"],
+                norm2_gamma=weights[f"model.decoder.layers.{i}.encoder_attn_layer_norm.weight"],
+                norm2_beta=weights[f"model.decoder.layers.{i}.encoder_attn_layer_norm.bias"],
+                norm3_gamma=weights[f"model.decoder.layers.{i}.final_layer_norm.weight"],
+                norm3_beta=weights[f"model.decoder.layers.{i}.final_layer_norm.bias"],
+            )
+            for i in range(cfg.n_dec_layers)
+        ],
+        lm_head=weights["lm_head.weight"],
+        final_logits_bias=weights["final_logits_bias"].reshape(cfg.vocab_size),
+    )
 
 
 def encoder(src_ids: np.ndarray, params: MarianParams, cfg: TransformerConfig) -> np.ndarray:
