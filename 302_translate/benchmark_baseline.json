@@ -1,0 +1,17 @@
+{
+  "num_samples": 100,
+  "batch_size_param": 5,
+  "max_new_tokens": 64,
+  "wall_time_s": 90.938,
+  "avg_latency_ms": 909.1,
+  "p50_latency_ms": 741.34,
+  "p90_latency_ms": 1659.64,
+  "p99_latency_ms": 3437.95,
+  "sentences_per_sec": 1.1,
+  "src_tokens": 2749,
+  "tgt_tokens": 2105,
+  "src_tokens_per_sec": 30.23,
+  "tgt_tokens_per_sec": 23.15,
+  "dataset": "/Users/aubee/workspace/leet-llm/302_translate/benchmark_data/en_1k.txt",
+  "model": "Helsinki-NLP/opus-mt-en-zh"
+}
