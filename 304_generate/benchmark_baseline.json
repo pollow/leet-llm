@@ -1,0 +1,16 @@
+{
+  "num_samples": 20,
+  "max_new_tokens": 64,
+  "temperature": 0.0,
+  "wall_time_s": 24.81,
+  "avg_latency_ms": 1240.39,
+  "p50_latency_ms": 1237.25,
+  "p90_latency_ms": 1282.1,
+  "p99_latency_ms": 1299.66,
+  "stories_per_sec": 0.806,
+  "prompt_tokens": 137,
+  "gen_tokens": 1280,
+  "gen_tokens_per_sec": 51.59,
+  "dataset": "/Users/aubee/workspace/leet-llm/304_generate/benchmark_data/prompts.txt",
+  "model": "stories15M (Xenova/llama2.c-stories15M)"
+}

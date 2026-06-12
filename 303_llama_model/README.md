@@ -112,9 +112,10 @@ uv run grade 303
 
 The real-weight parity test (`test_real_stories15m_matches_llama3np`) compares your
 `llama_forward` against the `llama3.np` reference on the actual stories15M checkpoint. It
-runs automatically if `../../llama3.np/stories15M.model.npz` is present; otherwise fetch the
-weights first:
+runs automatically if the `../../llama3.np` sibling repo is present (it provides both the
+weights and the reference `Llama` class). The weights themselves are fetched by the **304**
+capstone's downloader (shared across both Track-B tasks):
 
 ```bash
-bash 303_llama_model/download.sh
+bash 304_generate/download.sh
 ```

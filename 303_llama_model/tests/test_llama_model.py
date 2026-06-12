@@ -48,12 +48,15 @@ import pytest
 
 _SIB = pathlib.Path(__file__).resolve().parents[3] / "llama3.np"
 _LOCAL = _SIB / "stories15M.model.npz"
-_LINK = pathlib.Path(__file__).parent.parent / "stories15M.model.npz"
+# weights now live with the 304 capstone (download.sh moved there)
+_LINK = pathlib.Path(__file__).resolve().parents[2] / "304_generate" / "stories15M.model.npz"
 _WEIGHTS = _LOCAL if _LOCAL.exists() else _LINK
 
 
-@pytest.mark.skipif(not _WEIGHTS.exists(),
-                    reason="run 303_llama_model/download.sh to fetch stories15M")
+# This cross-check compares against the genuine llama3.np reference, so it needs BOTH the
+# weights and the llama3.np sibling repo (for `from llama3 import Llama`).
+@pytest.mark.skipif(not (_WEIGHTS.exists() and _SIB.exists()),
+                    reason="run 304_generate/download.sh + clone llama3.np sibling to compare")
 def test_real_stories15m_matches_llama3np():
     sys.path.insert(0, str(_SIB))
     from config import ModelArgs

@@ -75,3 +75,27 @@ def test_generate_stops_at_eos():
     eos = full[prompt.shape[1]]                           # force eos = first generated token
     out = generate(prompt, _params(), cfg, max_new_tokens=4, temperature=0.0, eos_id=eos)
     assert out == full[: prompt.shape[1] + 1] and out[-1] == eos
+
+
+# --- real-weight capstone: greedy story parity vs the genuine stories15M / llama3.np ---
+import pytest  # noqa: E402
+
+_REAL = FIX / "real_ref.npz"
+_SIB = pathlib.Path(__file__).resolve().parents[3] / "llama3.np" / "stories15M.model.npz"
+_WEIGHTS = _SIB if _SIB.exists() else pathlib.Path(__file__).parent.parent / "stories15M.model.npz"
+
+
+@pytest.mark.skipif(not _WEIGHTS.exists(),
+                    reason="run 304_generate/download.sh to fetch stories15M")
+def test_real_stories15m_greedy_story():
+    """Your generate() must reproduce the genuine model's greedy story token-for-token."""
+    R = np.load(_REAL)
+    cfg = LlamaConfig(dim=int(R["dim"]), n_layers=int(R["n_layers"]), n_heads=int(R["n_heads"]),
+                      n_kv_heads=int(R["n_kv_heads"]), vocab_size=int(R["vocab_size"]),
+                      max_seq_len=int(R["max_seq_len"]), norm_eps=float(R["norm_eps"]),
+                      rope_base=float(R["rope_base"]))
+    W = dict(np.load(_WEIGHTS))
+    params = load_llama(W, cfg)
+    out = generate(R["prompt_ids"], params, cfg,
+                   max_new_tokens=int(R["max_new_tokens"]), temperature=0.0)
+    assert out == R["expected_ids"].tolist()

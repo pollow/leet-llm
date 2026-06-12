@@ -92,3 +92,55 @@ Reuse `softmax` (005), `top_k` (007), `sample_categorical` (010), and `llama_for
 ```bash
 uv run grade 304
 ```
+
+The hermetic tests (sampling warpers + the tiny-model generation loop) need no weights. The
+real-weight capstone test (`test_real_stories15m_greedy_story`) runs only once you've fetched
+the checkpoint; until then it is skipped.
+
+## Run it for real (watch your NumPy tell a story)
+
+Fetch + convert `stories15M` — Karpathy's llama2.c TinyStories model, the same checkpoint
+`llama3.np` runs (Llama-2 == Llama-3 architecture; the only deltas are the 32k SentencePiece
+tokenizer and `rope_theta=10000`). Weights are **not** committed; this downloads only the
+three files we need (`config.json` + `model.safetensors` + `tokenizer.model`, ~60 MB) and
+un-permutes q/k from HF's rotate-half layout back to our interleaved RoPE:
+
+```bash
+uv sync --group gen
+bash 304_generate/download.sh
+# -> writes 304_generate/stories15M.model.npz + tokenizer.model (gitignored)
+#    and tests/fixtures/real_ref.npz (committed greedy-story reference)
+```
+
+Then generate a story with **your own** code:
+
+```python
+import numpy as np
+import sentencepiece as spm
+from leet_llm import LlamaConfig, load_llama, generate
+
+sp = spm.SentencePieceProcessor(model_file="304_generate/tokenizer.model")
+R = np.load("304_generate/tests/fixtures/real_ref.npz")
+cfg = LlamaConfig(dim=int(R["dim"]), n_layers=int(R["n_layers"]), n_heads=int(R["n_heads"]),
+                  n_kv_heads=int(R["n_kv_heads"]), vocab_size=int(R["vocab_size"]),
+                  max_seq_len=int(R["max_seq_len"]), norm_eps=float(R["norm_eps"]),
+                  rope_base=float(R["rope_base"]))
+W = np.load("304_generate/stories15M.model.npz")
+params = load_llama({k: W[k] for k in W.files}, cfg)
+
+ids = np.array([[sp.bos_id()] + sp.encode("Once upon a time")])
+out = generate(ids, params, cfg, max_new_tokens=64, temperature=0.0)
+print(sp.decode(out))
+# -> Once upon a time, there was a little girl named Lily. She loved to play outside ...
+```
+
+## Benchmark (the L4 baseline)
+
+`generate` here is **stateless recompute** — every step reprocesses the whole prefix, so cost
+is quadratic in length. That is exactly the inefficiency L4's KV-cache removes; this benchmark
+captures the "before" number:
+
+```bash
+LEET_LLM_TARGET=solution uv run --group gen python 304_generate/tools/benchmark.py --limit 20
+# writes benchmark_baseline.json (latency percentiles, tokens/sec) + prints sample stories
+```
