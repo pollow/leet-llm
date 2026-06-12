@@ -84,6 +84,7 @@ def llama_forward(
     Returns logits (B, L, V)."""
     B, L = input_ids.shape
     h = params.tok_embed[input_ids]  # (B, L, d)
+    # start_pos: ignore for now — only used by L4 KV-cache decoding
     positions = np.arange(start_pos, start_pos + L)
     mask = triangular_mask(L)
     for block in params.layers:

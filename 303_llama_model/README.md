@@ -101,6 +101,7 @@ def load_llama(weights: dict, cfg: LlamaConfig) -> LlamaParams: ...
 def llama_forward(input_ids: np.ndarray, params: LlamaParams, cfg: LlamaConfig,
                   start_pos: int = 0) -> np.ndarray: ...
 #   input_ids: (B, L)   ->   logits: (B, L, V)
+#   start_pos: ignore for now — only used by L4 KV-cache decoding
 ```
 
 ## How to Test
