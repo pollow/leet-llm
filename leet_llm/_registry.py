@@ -115,4 +115,9 @@ REGISTRY: dict[str, tuple[str, str]] = {
     "MixtralParams": ("307_mixtral_model", "MixtralParams"),
     "load_mixtral": ("307_mixtral_model", "load_mixtral"),
     "mixtral_forward": ("307_mixtral_model", "mixtral_forward"),
+    "mla_project": ("308_deepseek_model", "mla_project"),
+    "DeepseekConfig": ("308_deepseek_model", "DeepseekConfig"),
+    "DeepseekParams": ("308_deepseek_model", "DeepseekParams"),
+    "load_deepseek": ("308_deepseek_model", "load_deepseek"),
+    "deepseek_forward": ("308_deepseek_model", "deepseek_forward"),
 }
