@@ -101,4 +101,5 @@ REGISTRY: dict[str, tuple[str, str]] = {
     "generate": ("304_generate", "generate"),
     # Track C — OSS-Zoo Architecture Deltas
     "sliding_window_mask": ("305_sliding_window_attention", "sliding_window_mask"),
+    "qk_norm": ("306_qk_norm", "qk_norm"),
 }
