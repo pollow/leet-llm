@@ -5,7 +5,7 @@ to our .npz (AUTHORING/DEMO, gen group).
 
 Downloads ONLY config.json + model.safetensors (~2 MB) — no un-permute needed
 because Mistral uses rotate-half RoPE, same layout as HF. Verifies our
-``mistral_forward`` reproduces HF logits, then commits ``real_ref.npz``.
+``mistral_forward`` reproduces genuine HF logits, then commits ``real_ref.npz``.
 
 Outputs (next to this file):
   mistral_tiny.npz                   full weights (git-ignored)
@@ -14,6 +14,13 @@ Outputs (next to this file):
 Note: hf-internal-testing/tiny-random-MistralForCausalLM has sliding_window=4096,
 so the band does NOT activate at short L — but the band is already exercised by the
 operator invariant tests + the hermetic fixture (tiny_mistral.npz with window=3).
+
+The random-init checkpoint has hidden_act="gelu" in its config, but real Mistral
+always uses SiLU. We force hidden_act="silu" before instantiating the HF model so
+that both sides (HF and our mistral_forward / swiglu_ffn) use the same activation.
+The weights are unchanged — only the config field differs. This makes test B a
+genuine parity check: our forward vs real MistralForCausalLM (SiLU-forced, float64)
+on the downloaded weights, at rtol=1e-5 / atol=1e-4.
 """
 
 from __future__ import annotations
@@ -80,9 +87,21 @@ def main() -> None:
     np.savez(HERE / "mistral_tiny.npz", **W)
     print(f"Wrote mistral_tiny.npz ({len(W)} arrays)")
 
-    # Verify our forward matches HF logits before committing the reference
-    from transformers import AutoModelForCausalLM
+    # Get genuine HF logits with hidden_act forced to "silu" (real Mistral activation).
+    # The random-init checkpoint config has hidden_act="gelu"; we override it so the HF
+    # model uses the same activation as our mistral_forward (swiglu_ffn uses SiLU).
+    # The weights are unchanged — only the config field is overridden.
+    from transformers import AutoConfig, MistralForCausalLM
     from leet_llm import MistralConfig, load_mistral, mistral_forward
+
+    hf_config = AutoConfig.from_pretrained(NAME)
+    hf_config.hidden_act = "silu"  # force SiLU to match real Mistral + our forward
+    hf = MistralForCausalLM.from_pretrained(
+        NAME, config=hf_config, torch_dtype=torch.float64
+    ).eval()
+    with torch.no_grad():
+        hf_logits = hf(torch.tensor(INPUT_IDS, dtype=torch.long)).logits.numpy()  # (1, L, V)
+    print(f"[hf] genuine MistralForCausalLM (SiLU-forced, float64) logits: shape={hf_logits.shape}")
 
     sliding_window = cfg.get("sliding_window", None) or cfg.get("sliding_window_size", 4096)
     mcfg = MistralConfig(
@@ -98,33 +117,28 @@ def main() -> None:
     )
     params = load_mistral(W, mcfg)
 
-    # Our forward (float32 weights → float64 numpy)
+    # Our forward (weights cast to float64 inside the forward)
     out_logits = mistral_forward(INPUT_IDS, params, mcfg)  # (1, L, V)
 
-    # HF reference (float32)
-    hf = AutoModelForCausalLM.from_pretrained(NAME, torch_dtype=torch.float32).eval()
-    with torch.no_grad():
-        hf_logits = hf(torch.tensor(INPUT_IDS, dtype=torch.long)).logits.numpy()
+    # Genuine parity check: our forward vs real HF (SiLU-forced, float64).
+    # Both sides use SiLU on the same downloaded weights so this MUST pass.
+    # If it does not, there is a real forward bug — STOP and report.
+    max_diff = np.max(np.abs(out_logits - hf_logits))
+    np.testing.assert_allclose(
+        out_logits, hf_logits, rtol=1e-5, atol=1e-4,
+        err_msg=(
+            f"BLOCKED: mistral_forward vs genuine HF (SiLU-forced) max_abs_diff={max_diff:.3e}. "
+            "Fix mistral_forward before regenerating real_ref.npz."
+        ),
+    )
+    print(f"[verify] mistral_forward vs genuine HF SiLU (max abs diff {max_diff:.2e}) ✓")
 
-    # Note: this test checkpoint uses hidden_act="gelu" (a quirk of the random init),
-    # while real Mistral uses SiLU. That causes ~1e-3 logit differences. We verify
-    # architectural structure is correct (right shapes, right routing), not SiLU vs GELU.
-    # Use a loose tolerance here; the tight SiLU oracle is the hermetic fixture.
-    try:
-        np.testing.assert_allclose(out_logits, hf_logits, rtol=1e-2, atol=5e-3)
-        max_diff = np.max(np.abs(out_logits - hf_logits))
-        print(f"[verify] mistral_forward vs HF (max abs diff {max_diff:.2e}) ✓")
-    except AssertionError as e:
-        max_diff = np.max(np.abs(out_logits - hf_logits))
-        print(f"[warn] max abs diff = {max_diff:.2e} (test checkpoint uses GELU, not SiLU)")
-        print("[warn] Architecture verified; real Mistral models use SiLU and will match tightly.")
-
-    # Write the committed reference
+    # Write the committed reference — logits are from the genuine HF model (SiLU, float64)
     (HERE / "tests" / "fixtures").mkdir(parents=True, exist_ok=True)
     np.savez(
         HERE / "tests" / "fixtures" / "real_ref.npz",
         input_ids=INPUT_IDS,
-        logits=out_logits,
+        logits=hf_logits,  # genuine HF MistralForCausalLM (SiLU-forced, float64)
         dim=np.array(mcfg.dim),
         n_layers=np.array(mcfg.n_layers),
         n_heads=np.array(mcfg.n_heads),

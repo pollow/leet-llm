@@ -5,7 +5,11 @@ Three categories:
   2. Whole-model parity (A) — ``mistral_forward`` vs the composed float64 oracle in
      ``tiny_mistral.npz`` at ``rtol=1e-9``.
   3. Real-weights parity (B, skippable) — ``mistral_forward`` vs ``real_ref.npz`` logits
-     produced from ``hf-internal-testing/tiny-random-MistralForCausalLM``.
+     produced by a genuine ``MistralForCausalLM`` (SiLU-forced, float64) on the downloaded
+     ``hf-internal-testing/tiny-random-MistralForCausalLM`` weights.
+     The random-init checkpoint has ``hidden_act="gelu"`` in its config; convert.py
+     forces ``hidden_act="silu"`` so both sides use real Mistral's activation.
+     Test B is a genuine parity check at ``rtol=1e-5``, NOT a self-circular check.
      Run ``305_sliding_window_attention/download.sh`` to populate the weights.
 """
 
@@ -265,7 +269,12 @@ _REAL_REF = FIX / "real_ref.npz"
 )
 def test_mistral_real_weights_logits():
     """mistral_forward on the real tiny-random-MistralForCausalLM weights must
-    match the committed real_ref.npz logits (produced by HF during convert.py).
+    match the committed real_ref.npz logits.
+
+    real_ref.npz logits were produced by a genuine MistralForCausalLM
+    (hidden_act="silu" forced, float64) on the downloaded weights via convert.py.
+    This is a genuine parity check (our forward vs real HF model), not a
+    self-circular check. Both sides use SiLU on the same weights; tolerance rtol=1e-5.
     """
     ref = np.load(_REAL_REF)
     weights = dict(np.load(str(_WEIGHTS_PATH)))
