@@ -1,13 +1,14 @@
-"""306 — tests for ``qk_norm``.
+"""306 — tests for ``qk_norm`` and the Qwen3 whole-model.
 
-Two categories:
-  1. Real-fixture parity — the output must match the float64 reference
-     computed from genuine ``Qwen3ForCausalLM`` Q/K projections (pre-norm
-     values captured from a real forward pass, expected outputs computed via
-     pure float64 numpy RMSNorm).
-  2. Random / property tests — shape preserved; identity weight reduces to
-     plain RMSNorm; per-head independence; Q and K are normalised
-     independently.
+Three categories:
+  1. qk_norm operator invariants (original) — fixture parity, shape/dtype,
+     identity-weight, per-head independence, Q/K independence.
+  2. Whole-model parity (A) — ``qwen3_forward`` vs the composed float64 oracle in
+     ``tiny_qwen3.npz`` at ``rtol=1e-9``.
+  3. Real-weights parity (B, skippable) — ``qwen3_forward`` vs ``real_ref.npz`` logits
+     produced by a genuine ``Qwen3ForCausalLM`` (float64) on the downloaded
+     ``Qwen/Qwen3-0.6B`` weights.  Run ``306_qk_norm/download.sh`` to populate the
+     weights.  Test B is a genuine parity check at ``rtol=1e-5``, NOT self-circular.
 """
 
 from __future__ import annotations
@@ -22,12 +23,14 @@ from leet_llm.grader import load
 
 _m = load(__file__)
 qk_norm = _m.qk_norm
+Qwen3Config = _m.Qwen3Config
+load_qwen3 = _m.load_qwen3
+qwen3_forward = _m.qwen3_forward
 
 FIX = pathlib.Path(__file__).parent / "fixtures"
 
-
 # ---------------------------------------------------------------------------
-# 1. Real-fixture parity
+# 1. Real-fixture parity — qk_norm operator
 # ---------------------------------------------------------------------------
 
 
@@ -106,7 +109,7 @@ def test_identity_weight_matches_rms_norm_q():
     eps = 1e-6
 
     q_out, _ = qk_norm(q, k, q_weight=ones, k_weight=ones, eps=eps)
-    q_ref = rms_norm(q, ones, eps=eps)  # rms_norm also acts over last axis
+    q_ref = rms_norm(q, ones, eps=eps)
 
     np.testing.assert_allclose(
         q_out, q_ref, rtol=1e-9, atol=1e-9,
@@ -170,7 +173,6 @@ def test_per_head_independence_q():
 
     q_out_orig, _ = qk_norm(q, k, q_w, k_w)
 
-    # Perturb one head heavily
     q_perturbed = q.copy()
     q_perturbed[2] = rng.standard_normal((L, d)) * 100.0
 
@@ -196,7 +198,7 @@ def test_per_position_independence_q():
     q_out_orig, _ = qk_norm(q, k, q_w, k_w)
 
     q_perturbed = q.copy()
-    q_perturbed[1, 3] = rng.standard_normal(d) * 100.0  # head 1, pos 3
+    q_perturbed[1, 3] = rng.standard_normal(d) * 100.0
 
     q_out_pert, _ = qk_norm(q_perturbed, k, q_w, k_w)
 
@@ -223,7 +225,6 @@ def test_q_k_independent():
 
     q_out, k_out = qk_norm(q, k, q_w, k_w)
 
-    # Large perturbation to K — Q output must be unchanged
     k2 = rng.standard_normal((2, 5, 8)) * 1000.0
     q_out2, _ = qk_norm(q, k2, q_w, k_w)
     np.testing.assert_allclose(
@@ -231,7 +232,6 @@ def test_q_k_independent():
         err_msg="Q output changed when only K was perturbed",
     )
 
-    # Large perturbation to Q — K output must be unchanged
     q3 = rng.standard_normal((4, 5, 8)) * 1000.0
     _, k_out3 = qk_norm(q3, k, q_w, k_w)
     np.testing.assert_allclose(
@@ -259,8 +259,94 @@ def test_batch_dim_passthrough():
     assert q_out.shape == (B, n_q, L, d)
     assert k_out.shape == (B, 2, L, d)
 
-    # Each batch element should equal the unbatched result
     for b in range(B):
         q_single, k_single = qk_norm(q[b], k[b], q_w, k_w)
         np.testing.assert_allclose(q_out[b], q_single, rtol=1e-12, atol=1e-12)
         np.testing.assert_allclose(k_out[b], k_single, rtol=1e-12, atol=1e-12)
+
+
+# ---------------------------------------------------------------------------
+# A. Whole-model parity — tiny hermetic fixture (always-on)
+# ---------------------------------------------------------------------------
+
+_TINY = np.load(FIX / "tiny_qwen3.npz")
+
+
+def _tiny_cfg():
+    return Qwen3Config(
+        dim=int(_TINY["dim"]),
+        n_layers=int(_TINY["n_layers"]),
+        n_heads=int(_TINY["n_heads"]),
+        n_kv_heads=int(_TINY["n_kv_heads"]),
+        head_dim=int(_TINY["head_dim"]),
+        vocab_size=int(_TINY["vocab_size"]),
+        max_seq_len=int(_TINY["max_seq_len"]),
+        norm_eps=float(_TINY["norm_eps"]),
+        qk_norm_eps=float(_TINY["qk_norm_eps"]),
+        rope_base=float(_TINY["rope_base"]),
+    )
+
+
+def _tiny_params():
+    return load_qwen3({k: _TINY[k] for k in _TINY.files}, _tiny_cfg())
+
+
+def test_qwen3_logits_match_oracle():
+    """qwen3_forward must reproduce the composed float64 oracle logits at rtol=1e-9."""
+    out = qwen3_forward(_TINY["input_ids"], _tiny_params(), _tiny_cfg())
+    np.testing.assert_allclose(out, _TINY["logits"], rtol=1e-9, atol=1e-9)
+
+
+def test_qwen3_logits_shape():
+    out = qwen3_forward(_TINY["input_ids"], _tiny_params(), _tiny_cfg())
+    B, L = _TINY["input_ids"].shape
+    assert out.shape == (B, L, int(_TINY["vocab_size"]))
+
+
+def test_qwen3_causal():
+    """Changing the last token must NOT affect earlier logits (causal masking)."""
+    p, cfg = _tiny_params(), _tiny_cfg()
+    base = qwen3_forward(_TINY["input_ids"], p, cfg)
+    ids2 = _TINY["input_ids"].copy()
+    ids2[0, -1] = (ids2[0, -1] + 1) % int(_TINY["vocab_size"])
+    pert = qwen3_forward(ids2, p, cfg)
+    np.testing.assert_allclose(base[0, :-1], pert[0, :-1], atol=1e-9)
+
+
+# ---------------------------------------------------------------------------
+# B. Real-weights parity — skippable (run download.sh first)
+# ---------------------------------------------------------------------------
+
+_WEIGHTS_PATH = pathlib.Path(__file__).resolve().parents[1] / "qwen3_0_6b.npz"
+_REAL_REF = FIX / "real_ref.npz"
+
+
+@pytest.mark.skipif(
+    not _WEIGHTS_PATH.exists(),
+    reason="run 306_qk_norm/download.sh to fetch real weights",
+)
+def test_qwen3_real_weights_logits():
+    """qwen3_forward on the real Qwen/Qwen3-0.6B weights must match the committed
+    real_ref.npz logits.
+
+    real_ref.npz logits were produced by a genuine Qwen3ForCausalLM (float64) on the
+    downloaded weights via convert.py.  This is a genuine parity check (our forward vs
+    real HF model), not a self-circular check.  Tolerance: rtol=1e-5, atol=1e-4.
+    """
+    ref = np.load(_REAL_REF)
+    weights = dict(np.load(str(_WEIGHTS_PATH)))
+    cfg = Qwen3Config(
+        dim=int(ref["dim"]),
+        n_layers=int(ref["n_layers"]),
+        n_heads=int(ref["n_heads"]),
+        n_kv_heads=int(ref["n_kv_heads"]),
+        head_dim=int(ref["head_dim"]),
+        vocab_size=int(ref["vocab_size"]),
+        max_seq_len=int(ref["max_seq_len"]),
+        norm_eps=float(ref["norm_eps"]),
+        qk_norm_eps=float(ref["qk_norm_eps"]),
+        rope_base=float(ref["rope_base"]),
+    )
+    params = load_qwen3(weights, cfg)
+    out = qwen3_forward(ref["input_ids"], params, cfg)
+    np.testing.assert_allclose(out, ref["logits"], rtol=1e-5, atol=1e-4)

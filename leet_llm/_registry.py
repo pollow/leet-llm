@@ -106,4 +106,8 @@ REGISTRY: dict[str, tuple[str, str]] = {
     "load_mistral": ("305_sliding_window_attention", "load_mistral"),
     "mistral_forward": ("305_sliding_window_attention", "mistral_forward"),
     "qk_norm": ("306_qk_norm", "qk_norm"),
+    "Qwen3Config": ("306_qk_norm", "Qwen3Config"),
+    "Qwen3Params": ("306_qk_norm", "Qwen3Params"),
+    "load_qwen3": ("306_qk_norm", "load_qwen3"),
+    "qwen3_forward": ("306_qk_norm", "qwen3_forward"),
 }
