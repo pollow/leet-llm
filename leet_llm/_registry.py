@@ -99,4 +99,6 @@ REGISTRY: dict[str, tuple[str, str]] = {
     "llama_forward": ("303_llama_model", "llama_forward"),
     "sample": ("304_generate", "sample"),
     "generate": ("304_generate", "generate"),
+    # Track C — OSS-Zoo Architecture Deltas
+    "sliding_window_mask": ("305_sliding_window_attention", "sliding_window_mask"),
 }
