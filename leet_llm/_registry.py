@@ -110,4 +110,9 @@ REGISTRY: dict[str, tuple[str, str]] = {
     "Qwen3Params": ("306_qk_norm", "Qwen3Params"),
     "load_qwen3": ("306_qk_norm", "load_qwen3"),
     "qwen3_forward": ("306_qk_norm", "qwen3_forward"),
+    "moe_ffn": ("307_mixtral_model", "moe_ffn"),
+    "MixtralConfig": ("307_mixtral_model", "MixtralConfig"),
+    "MixtralParams": ("307_mixtral_model", "MixtralParams"),
+    "load_mixtral": ("307_mixtral_model", "load_mixtral"),
+    "mixtral_forward": ("307_mixtral_model", "mixtral_forward"),
 }
