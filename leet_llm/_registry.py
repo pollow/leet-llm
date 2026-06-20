@@ -120,4 +120,11 @@ REGISTRY: dict[str, tuple[str, str]] = {
     "DeepseekParams": ("308_deepseek_model", "DeepseekParams"),
     "load_deepseek": ("308_deepseek_model", "load_deepseek"),
     "deepseek_forward": ("308_deepseek_model", "deepseek_forward"),
+    "softcap": ("309_gemma_model", "softcap"),
+    "geglu_ffn": ("309_gemma_model", "geglu_ffn"),
+    "GeGLUParams": ("309_gemma_model", "GeGLUParams"),
+    "GemmaConfig": ("309_gemma_model", "GemmaConfig"),
+    "GemmaParams": ("309_gemma_model", "GemmaParams"),
+    "load_gemma": ("309_gemma_model", "load_gemma"),
+    "gemma_forward": ("309_gemma_model", "gemma_forward"),
 }

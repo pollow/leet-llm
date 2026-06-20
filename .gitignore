@@ -17,3 +17,4 @@ __pycache__/
 306_qk_norm/qwen3_0_6b.npz
 307_mixtral_model/mixtral_tiny.npz
 308_deepseek_model/deepseek_tiny.npz
+309_gemma_model/gemma_tiny.npz
