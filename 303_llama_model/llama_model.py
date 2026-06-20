@@ -13,15 +13,6 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from leet_llm import (
-    AttnParams,
-    LlamaBlockParams,
-    SwiGLUParams,
-    llama_decoder_block,
-    rms_norm,
-    triangular_mask,
-)
-
 
 @dataclass(frozen=True)
 class LlamaConfig:
@@ -37,66 +28,19 @@ class LlamaConfig:
 
 @dataclass(frozen=True)
 class LlamaParams:
-    tok_embed: np.ndarray  # (V, d)
-    layers: list  # list[LlamaBlockParams] (from leet_llm import LlamaBlockParams)
-    final_norm: np.ndarray  # (d,) RMSNorm weight
-    lm_head: np.ndarray  # (V, d)
+    tok_embed: np.ndarray            # (V, d)
+    layers: list                     # list[LlamaBlockParams] (from leet_llm import LlamaBlockParams)
+    final_norm: np.ndarray           # (d,) RMSNorm weight
+    lm_head: np.ndarray              # (V, d)
 
 
 def load_llama(weights: dict, cfg: LlamaConfig) -> LlamaParams:
     """Map a dict of HF-named arrays (see README table) into LlamaParams."""
-    tok_embed = weights["model.embed_tokens.weight"]
-    final_norm = weights["model.norm.weight"]
-    lm_head = weights["lm_head.weight"]
-
-    layers: list[LlamaBlockParams] = []
-    for i in range(cfg.n_layers):
-        prefix = f"model.layers.{i}"
-        attn_norm = weights[f"{prefix}.input_layernorm.weight"]
-        ffn_norm = weights[f"{prefix}.post_attention_layernorm.weight"]
-
-        Wq = weights[f"{prefix}.self_attn.q_proj.weight"]
-        Wk = weights[f"{prefix}.self_attn.k_proj.weight"]
-        Wv = weights[f"{prefix}.self_attn.v_proj.weight"]
-        Wo = weights[f"{prefix}.self_attn.o_proj.weight"]
-        attn = AttnParams(
-            Wq=Wq, Wk=Wk, Wv=Wv, Wo=Wo, bq=None, bk=None, bv=None, bo=None
-        )
-
-        W1 = weights[f"{prefix}.mlp.gate_proj.weight"]  # gate
-        W3 = weights[f"{prefix}.mlp.up_proj.weight"]  # up
-        W2 = weights[f"{prefix}.mlp.down_proj.weight"]  # down
-        ffn = SwiGLUParams(W1=W1, W3=W3, W2=W2)
-
-        layers.append(
-            LlamaBlockParams(attn=attn, ffn=ffn, attn_norm=attn_norm, ffn_norm=ffn_norm)
-        )
-
-    return LlamaParams(
-        tok_embed=tok_embed, layers=layers, final_norm=final_norm, lm_head=lm_head
-    )
+    raise NotImplementedError("Implement load_llama — see 303_llama_model/README.md")
 
 
-def llama_forward(
-    input_ids: np.ndarray, params: LlamaParams, cfg: LlamaConfig, start_pos: int = 0
-) -> np.ndarray:
+def llama_forward(input_ids: np.ndarray, params: LlamaParams, cfg: LlamaConfig,
+                  start_pos: int = 0) -> np.ndarray:
     """Token embed → N Llama blocks (causal, positions start_pos..) → final RMSNorm → lm_head.
     Returns logits (B, L, V)."""
-    B, L = input_ids.shape
-    h = params.tok_embed[input_ids]  # (B, L, d)
-    # start_pos: ignore for now — only used by L4 KV-cache decoding
-    positions = np.arange(start_pos, start_pos + L)
-    mask = triangular_mask(L)
-    for block in params.layers:
-        h = llama_decoder_block(
-            h,
-            block,
-            cfg.n_heads,
-            cfg.n_kv_heads,
-            positions=positions,
-            mask=mask,
-            eps=cfg.norm_eps,
-        )
-    h = rms_norm(h, params.final_norm, cfg.norm_eps)
-    logits = h @ params.lm_head.T  # (B, L, V)
-    return logits
+    raise NotImplementedError("Implement llama_forward — see 303_llama_model/README.md")
