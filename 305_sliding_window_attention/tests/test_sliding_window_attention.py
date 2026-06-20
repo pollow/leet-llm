@@ -1,10 +1,12 @@
-"""305 — tests for ``sliding_window_mask``.
+"""305 — tests for ``sliding_window_mask`` and the Mistral whole-model.
 
-Two categories:
-  1. Real-fixture parity — the mask must equal the band captured from a
-     genuine ``MistralForCausalLM`` (L=6, W=3).
-  2. Random / property tests — shape, attended-set definition, degenerate
-     cases, and an attention-parity check via ``sdpa``.
+Three categories:
+  1. Band-mask invariants — ``sliding_window_mask`` shape/dtype/attended-set (original).
+  2. Whole-model parity (A) — ``mistral_forward`` vs the composed float64 oracle in
+     ``tiny_mistral.npz`` at ``rtol=1e-9``.
+  3. Real-weights parity (B, skippable) — ``mistral_forward`` vs ``real_ref.npz`` logits
+     produced from ``hf-internal-testing/tiny-random-MistralForCausalLM``.
+     Run ``305_sliding_window_attention/download.sh`` to populate the weights.
 """
 
 from __future__ import annotations
@@ -19,12 +21,14 @@ from leet_llm.grader import load
 
 _m = load(__file__)
 sliding_window_mask = _m.sliding_window_mask
+MistralConfig = _m.MistralConfig
+load_mistral = _m.load_mistral
+mistral_forward = _m.mistral_forward
 
 FIX = pathlib.Path(__file__).parent / "fixtures"
 
-
 # ---------------------------------------------------------------------------
-# 1. Real-fixture parity
+# 1. Real-fixture parity — band mask
 # ---------------------------------------------------------------------------
 
 
@@ -198,3 +202,84 @@ def test_additive_mask_format_compatible_with_sdpa():
         # Attended weights must be positive and sum to 1
         attended = np.array([j for j in range(L) if i - W < j <= i])
         assert attn_weights[i, attended].sum() == pytest.approx(1.0, abs=1e-12)
+
+
+# ---------------------------------------------------------------------------
+# A. Whole-model parity — tiny hermetic fixture (always-on)
+# ---------------------------------------------------------------------------
+
+_TINY = np.load(FIX / "tiny_mistral.npz")
+
+
+def _tiny_cfg():
+    return MistralConfig(
+        dim=int(_TINY["dim"]),
+        n_layers=int(_TINY["n_layers"]),
+        n_heads=int(_TINY["n_heads"]),
+        n_kv_heads=int(_TINY["n_kv_heads"]),
+        vocab_size=int(_TINY["vocab_size"]),
+        sliding_window=int(_TINY["sliding_window"]),
+        max_seq_len=int(_TINY["max_seq_len"]),
+        norm_eps=float(_TINY["norm_eps"]),
+        rope_base=float(_TINY["rope_base"]),
+    )
+
+
+def _tiny_params():
+    return load_mistral({k: _TINY[k] for k in _TINY.files}, _tiny_cfg())
+
+
+def test_mistral_logits_match_oracle():
+    """mistral_forward must reproduce the composed float64 oracle logits at rtol=1e-9."""
+    out = mistral_forward(_TINY["input_ids"], _tiny_params(), _tiny_cfg())
+    np.testing.assert_allclose(out, _TINY["logits"], rtol=1e-9, atol=1e-9)
+
+
+def test_mistral_logits_shape():
+    out = mistral_forward(_TINY["input_ids"], _tiny_params(), _tiny_cfg())
+    B, L = _TINY["input_ids"].shape
+    assert out.shape == (B, L, int(_TINY["vocab_size"]))
+
+
+def test_mistral_causal():
+    """Changing the last token must NOT affect earlier logits (causal masking)."""
+    p, cfg = _tiny_params(), _tiny_cfg()
+    base = mistral_forward(_TINY["input_ids"], p, cfg)
+    ids2 = _TINY["input_ids"].copy()
+    ids2[0, -1] = (ids2[0, -1] + 1) % int(_TINY["vocab_size"])
+    pert = mistral_forward(ids2, p, cfg)
+    np.testing.assert_allclose(base[0, :-1], pert[0, :-1], atol=1e-9)
+
+
+# ---------------------------------------------------------------------------
+# B. Real-weights parity — skippable (run download.sh first)
+# ---------------------------------------------------------------------------
+
+_WEIGHTS_PATH = pathlib.Path(__file__).resolve().parents[1] / "mistral_tiny.npz"
+_REAL_REF = FIX / "real_ref.npz"
+
+
+@pytest.mark.skipif(
+    not _WEIGHTS_PATH.exists(),
+    reason="run 305_sliding_window_attention/download.sh to fetch real weights",
+)
+def test_mistral_real_weights_logits():
+    """mistral_forward on the real tiny-random-MistralForCausalLM weights must
+    match the committed real_ref.npz logits (produced by HF during convert.py).
+    """
+    ref = np.load(_REAL_REF)
+    weights = dict(np.load(str(_WEIGHTS_PATH)))
+    cfg = MistralConfig(
+        dim=int(ref["dim"]),
+        n_layers=int(ref["n_layers"]),
+        n_heads=int(ref["n_heads"]),
+        n_kv_heads=int(ref["n_kv_heads"]),
+        vocab_size=int(ref["vocab_size"]),
+        sliding_window=int(ref["sliding_window"]),
+        max_seq_len=int(ref["max_seq_len"]),
+        norm_eps=float(ref["norm_eps"]),
+        rope_base=float(ref["rope_base"]),
+    )
+    params = load_mistral(weights, cfg)
+    out = mistral_forward(ref["input_ids"], params, cfg)
+    np.testing.assert_allclose(out, ref["logits"], rtol=1e-5, atol=1e-4)

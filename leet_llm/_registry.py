@@ -101,5 +101,9 @@ REGISTRY: dict[str, tuple[str, str]] = {
     "generate": ("304_generate", "generate"),
     # Track C — OSS-Zoo Architecture Deltas
     "sliding_window_mask": ("305_sliding_window_attention", "sliding_window_mask"),
+    "MistralConfig": ("305_sliding_window_attention", "MistralConfig"),
+    "MistralParams": ("305_sliding_window_attention", "MistralParams"),
+    "load_mistral": ("305_sliding_window_attention", "load_mistral"),
+    "mistral_forward": ("305_sliding_window_attention", "mistral_forward"),
     "qk_norm": ("306_qk_norm", "qk_norm"),
 }

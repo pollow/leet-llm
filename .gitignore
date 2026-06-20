@@ -13,3 +13,4 @@ __pycache__/
 304_generate/stories15M.model.npz
 304_generate/tokenizer.model
 304_generate/benchmark_samples.jsonl
+305_sliding_window_attention/mistral_tiny.npz
