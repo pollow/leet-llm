@@ -1,19 +1,11 @@
-"""306 — Per-head Q/K RMSNorm (Qwen3 / OLMo-2 delta).
+"""306 — Per-Head Q/K RMSNorm (Qwen3 / OLMo-2 delta).
 
 Implement ``qk_norm``. See README.md for the full explanation.
 Run `uv run grade 306` to check your work.
 
-Hint: reuse ``from leet_llm import rms_norm`` (212). Each call to ``rms_norm``
-normalises its input over the last axis (``head_dim``).  Apply it once to ``q``
-with ``q_weight`` and once to ``k`` with ``k_weight``; return the pair.
-
-The math: for each head vector ``v`` of dimension ``d_head``
-
-    rms(v) = sqrt( mean(v**2) + eps )
-    qk_norm(v, w) = (v / rms(v)) * w
-
-Both ``q`` and ``k`` are processed independently; their shapes may differ
-(``n_q_heads`` vs ``n_kv_heads``) but the last axis ``head_dim`` is the same.
+Hint: reuse ``from leet_llm import rms_norm`` (212), applied per ``head_dim`` to the
+Q and K head vectors before RoPE. The classic Llama block skips this; Qwen3 adds
+learned ``q_norm``/``k_norm`` weights.
 """
 
 from __future__ import annotations

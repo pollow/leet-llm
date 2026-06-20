@@ -46,9 +46,9 @@ def test_matches_qwen3_fixture():
 
     assert q_out.shape == q_pre.shape, f"Q shape: expected {q_pre.shape}, got {q_out.shape}"
     assert k_out.shape == k_pre.shape, f"K shape: expected {k_pre.shape}, got {k_out.shape}"
-    np.testing.assert_allclose(q_out, q_post, rtol=1e-9, atol=1e-9,
+    np.testing.assert_allclose(q_out, q_post, rtol=1e-9, atol=1e-12,
                                err_msg="Q parity failed vs Qwen3 fixture")
-    np.testing.assert_allclose(k_out, k_post, rtol=1e-9, atol=1e-9,
+    np.testing.assert_allclose(k_out, k_post, rtol=1e-9, atol=1e-12,
                                err_msg="K parity failed vs Qwen3 fixture")
 
 

@@ -131,6 +131,21 @@ def _extract_qk_fixtures(seq_len: int = 5) -> dict[str, np.ndarray]:
     q_post = _rms_norm_f64(q_pre, q_weight, eps)
     k_post = _rms_norm_f64(k_pre, k_weight, eps)
 
+    # HF-anchor: apply the real q_norm/k_norm modules to the captured pre-norm
+    # tensors in float64.  This verifies the numpy oracle matches Qwen3's actual
+    # semantics (axis, eps placement, weight application) and catches wrong-axis
+    # or wrong-formula oracles.  Note: HF's Qwen3RMSNorm internally casts to
+    # float32 for variance, so we allow a small tolerance (~1e-7 gap).
+    with torch.no_grad():
+        # q_pre shape: (n_q_heads, L, head_dim) — HF norm expects (batch, seq, dim)
+        # so we reshape temporarily.
+        q_pre_t = torch.from_numpy(q_pre).to(torch.float64)  # (n_q_heads, L, head_dim)
+        k_pre_t = torch.from_numpy(k_pre).to(torch.float64)  # (n_kv_heads, L, head_dim)
+        q_post_hf = attn.q_norm(q_pre_t.reshape(-1, q_pre.shape[-1])).reshape(q_pre.shape)
+        k_post_hf = attn.k_norm(k_pre_t.reshape(-1, k_pre.shape[-1])).reshape(k_pre.shape)
+    q_post_hf = q_post_hf.numpy()
+    k_post_hf = k_post_hf.numpy()
+
     return {
         "q_pre": q_pre,
         "k_pre": k_pre,
@@ -139,6 +154,10 @@ def _extract_qk_fixtures(seq_len: int = 5) -> dict[str, np.ndarray]:
         "q_weight": q_weight,
         "k_weight": k_weight,
         "eps": np.array(eps),
+        # HF-anchor values — used in main() for oracle verification only;
+        # NOT saved to the fixture (float32-tainted, not suitable as graded oracle).
+        "q_post_hf": q_post_hf,
+        "k_post_hf": k_post_hf,
     }
 
 
@@ -146,7 +165,10 @@ def main() -> None:
     FIX.mkdir(exist_ok=True)
 
     data = _extract_qk_fixtures(seq_len=5)
-    np.savez(FIX / "qknorm.npz", **data)
+    # Save only the graded fixture arrays (exclude HF-anchor values used for
+    # oracle verification in this script only).
+    fixture_keys = {"q_pre", "k_pre", "q_post", "k_post", "q_weight", "k_weight", "eps"}
+    np.savez(FIX / "qknorm.npz", **{k: data[k] for k in fixture_keys})
 
     q_pre = data["q_pre"]
     q_post = data["q_post"]
@@ -159,12 +181,29 @@ def main() -> None:
     print(f"  k_weight={data['k_weight']}")
     print(f"  eps={float(data['eps'])}")
 
-    # Sanity check: verify q_post was computed correctly
+    # Sanity check 1: float64 self-consistency (oracle = _rms_norm_f64)
     eps = float(data["eps"])
-    rms = np.sqrt((q_pre**2).mean(axis=-1, keepdims=True) + eps)
-    q_check = (q_pre / rms) * data["q_weight"]
-    assert np.allclose(q_post, q_check, rtol=1e-12, atol=0), "sanity check failed"
-    print("  sanity check passed (float64 self-consistency)")
+    rms_q = np.sqrt((q_pre**2).mean(axis=-1, keepdims=True) + eps)
+    q_check = (q_pre / rms_q) * data["q_weight"]
+    assert np.allclose(q_post, q_check, rtol=1e-12, atol=0), "Q self-consistency check failed"
+    rms_k = np.sqrt((data["k_pre"] ** 2).mean(axis=-1, keepdims=True) + eps)
+    k_check = (data["k_pre"] / rms_k) * data["k_weight"]
+    assert np.allclose(data["k_post"], k_check, rtol=1e-12, atol=0), "K self-consistency check failed"
+    print("  sanity check 1 passed (float64 self-consistency for Q and K)")
+
+    # Sanity check 2: HF-anchor — numpy oracle matches genuine Qwen3 q_norm/k_norm
+    # (rtol=1e-4/atol=1e-5 tolerates HF's internal float32 variance cast)
+    q_post_hf = data["q_post_hf"]
+    k_post_hf = data["k_post_hf"]
+    np.testing.assert_allclose(
+        q_post, q_post_hf, rtol=1e-4, atol=1e-5,
+        err_msg="Q oracle diverges from genuine Qwen3 q_norm output",
+    )
+    np.testing.assert_allclose(
+        data["k_post"], k_post_hf, rtol=1e-4, atol=1e-5,
+        err_msg="K oracle diverges from genuine Qwen3 k_norm output",
+    )
+    print("  sanity check 2 passed (HF-anchor: numpy oracle matches Qwen3 q_norm/k_norm)")
 
 
 if __name__ == "__main__":
