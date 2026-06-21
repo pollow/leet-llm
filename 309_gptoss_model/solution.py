@@ -1,0 +1,272 @@
+"""309 — Attention sinks + GPT-OSS MoE: GPT-OSS whole-model forward.
+
+Two new delta operators plus the full GPT-OSS decoder assembly:
+
+1. ``attention_with_sinks(scores, sink_logits, mask=None)`` — softmax with one
+   extra learned per-head "sink" logit in the denominator, then drop the sink
+   column so the returned attention rows sum to ``< 1``.
+2. ``gptoss_moe_ffn(...)`` — GPT-OSS's sparse mixture-of-experts FFN.  It is NOT
+   Mixtral's ``moe_ffn`` (308): the router has a bias, the gate softmax is taken
+   over the **selected top-k** logits (not all experts), each expert carries
+   biases, the gate/up halves are **interleaved** (``::2`` / ``1::2``), and the
+   activation is a **clamped** GLU ``(up + 1) * gate * sigmoid(alpha * gate)``.
+3. ``GptOssConfig`` / ``GptOssParams`` / ``load_gptoss`` / ``gptoss_forward`` —
+   the GPT-OSS decoder-only model composing L2 primitives.
+
+See README.md. Run ``uv run grade 309`` to check your work.
+
+Hints:
+- ``attention_with_sinks``: reuse ``from leet_llm import softmax`` (005). Append the
+  per-head ``sink_logits`` as one extra column to ``scores`` (+ ``mask`` if given),
+  softmax over the widened last axis, then return everything except the sink column.
+- ``gptoss_moe_ffn``: reuse ``top_k`` (007) and ``softmax`` (005). Route each token to
+  its top-k experts, softmax the selected logits, and accumulate the weighted clamped-GLU
+  expert outputs.  GPT-OSS stores expert weights as ``x @ gate_up_proj[e]`` and
+  ``gated @ down_proj[e]`` (no transpose), with gate = even cols, up = odd cols.
+- ``gptoss_forward``: compose ``embedding`` (201) → per layer [``rms_norm`` (212) →
+  q/k/v ``affine`` (003, WITH bias) + ``group_last_axis`` (001) → ``rope_half`` (213) on
+  q & k → repeat-kv + scores ``* head_dim**-0.5`` → ``attention_with_sinks`` with the
+  layer's causal/sliding mask → ``@ v`` → merge + o_proj (WITH bias) → ``add_residual``
+  (208) → ``rms_norm`` → ``gptoss_moe_ffn`` → residual] → final ``rms_norm`` →
+  ``@ lm_head.T``.  Even layers (0, 2, …) use ``sliding_window_mask`` (305); odd layers
+  use full causal.  Use rotate-half RoPE (``rope_half``), NOT ``llama_decoder_block``
+  (216, interleaved-only).
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+
+import numpy as np
+
+
+def attention_with_sinks(
+    scores: np.ndarray,
+    sink_logits: np.ndarray,
+    mask: np.ndarray | None = None,
+) -> np.ndarray:
+    """Softmax-with-sinks attention weights (GPT-OSS delta).
+
+    GPT-OSS adds one learned **sink** logit per head to the softmax denominator.
+    Concatenate ``sink_logits`` as an extra key column, softmax over the widened
+    axis, then drop the sink column.  Because probability mass leaks into the
+    (discarded) sink, each returned attention row sums to ``< 1``.
+
+    Parameters
+    ----------
+    scores:
+        Pre-softmax attention logits, shape ``(B, H, L, L)`` — i.e.
+        ``Q K^T * scale`` with NO mask applied yet.
+    sink_logits:
+        Per-head sink logits, shape ``(H,)``.  Broadcast to one extra key
+        column ``(B, H, L, 1)``.
+    mask:
+        Optional additive mask broadcastable to ``scores`` (``0.0`` attended,
+        ``-inf`` masked).  Applied to ``scores`` before the sink is appended.
+
+    Returns
+    -------
+    np.ndarray
+        Attention weights of shape ``(B, H, L, L)`` (the sink column removed).
+        Rows sum to ``1 - sink_mass`` where ``sink_mass`` is the softmax mass on
+        the sink column.
+    """
+    raise NotImplementedError("Implement attention_with_sinks — see 309_gptoss_model/README.md")
+
+
+def gptoss_moe_ffn(
+    x: np.ndarray,
+    router_weight: np.ndarray,
+    router_bias: np.ndarray,
+    gate_up_proj: np.ndarray,
+    gate_up_bias: np.ndarray,
+    down_proj: np.ndarray,
+    down_bias: np.ndarray,
+    top_k: int,
+    alpha: float = 1.702,
+    limit: float = 7.0,
+) -> np.ndarray:
+    """GPT-OSS sparse mixture-of-experts FFN (the GPT-OSS MoE delta).
+
+    Differs from Mixtral's ``moe_ffn`` (308) in every routing/expert detail:
+
+    - **Router has a bias**: ``router_logits = x @ router_weight.T + router_bias``.
+    - **Softmax over the selected top-k logits**, not over all experts:
+      ``scores = softmax(top_k_values)``.
+    - **Interleaved gate/up**: ``gate = gate_up[..., ::2]``, ``up = gate_up[..., 1::2]``.
+    - **Clamped GLU** with bias-1 up gate::
+
+          gate = clip(gate, max=limit)
+          up   = clip(up, -limit, limit)
+          glu  = gate * sigmoid(alpha * gate)
+          out  = (up + 1) * glu
+
+    - **Expert weights applied without transpose** (``x @ gate_up_proj[e]``,
+      ``gated @ down_proj[e]``) and **each expert carries biases**.
+
+    Parameters
+    ----------
+    x:
+        Token activations, shape ``(T, d)`` (T = B*L tokens).
+    router_weight:
+        Router weight, shape ``(num_experts, d)``.
+    router_bias:
+        Router bias, shape ``(num_experts,)``.
+    gate_up_proj:
+        Stacked gate/up projection, shape ``(num_experts, d, 2 * intermediate)``.
+        Applied as ``x @ gate_up_proj[e]`` (input dim first — NO transpose).
+    gate_up_bias:
+        Gate/up bias, shape ``(num_experts, 2 * intermediate)``.
+    down_proj:
+        Down projection, shape ``(num_experts, intermediate, d)``.
+        Applied as ``gated @ down_proj[e]``.
+    down_bias:
+        Down bias, shape ``(num_experts, d)``.
+    top_k:
+        Number of experts each token routes to.
+    alpha:
+        GLU sigmoid gain (GPT-OSS uses ``1.702``).
+    limit:
+        Clamp limit for the gate/up pre-activations (GPT-OSS uses ``7.0``).
+
+    Returns
+    -------
+    np.ndarray
+        Same shape as ``x``.
+    """
+    raise NotImplementedError("Implement gptoss_moe_ffn — see 309_gptoss_model/README.md")
+
+
+# ---------------------------------------------------------------------------
+# GPT-OSS whole-model
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class GptOssConfig:
+    """Configuration for a GPT-OSS decoder-only model.
+
+    Attributes
+    ----------
+    dim:
+        Hidden size (``hidden_size``).
+    n_layers:
+        Number of decoder layers.
+    n_heads:
+        Number of query attention heads.
+    n_kv_heads:
+        Number of key/value heads (GQA).
+    head_dim:
+        Per-head dimension (GPT-OSS sets this explicitly; ``n_heads*head_dim``
+        need not equal ``dim``).
+    vocab_size:
+        Vocabulary size.
+    intermediate_size:
+        Per-expert FFN intermediate width.
+    num_local_experts:
+        Number of experts per MoE layer.
+    num_experts_per_tok:
+        Top-k experts each token routes to.
+    sliding_window:
+        Window size for the sliding-attention (even-indexed) layers.
+    norm_eps:
+        RMSNorm epsilon.
+    rope_base:
+        RoPE base frequency (``rope_theta``).
+    max_seq_len:
+        Maximum sequence length (position indices).
+    """
+
+    dim: int
+    n_layers: int
+    n_heads: int
+    n_kv_heads: int
+    head_dim: int
+    vocab_size: int
+    intermediate_size: int
+    num_local_experts: int
+    num_experts_per_tok: int
+    sliding_window: int = 128
+    norm_eps: float = 1e-5
+    rope_base: float = 150000.0
+    max_seq_len: int = 4096
+
+
+@dataclass(frozen=True)
+class GptOssParams:
+    """Packed weights for a GPT-OSS model.
+
+    Attributes
+    ----------
+    tok_embed:
+        Token embedding table, shape ``(V, d)``.
+    layers:
+        List of per-layer dicts (see ``load_gptoss`` for key names).
+    final_norm:
+        Final RMSNorm weight, shape ``(d,)``.
+    lm_head:
+        Output projection, shape ``(V, d)``.
+    """
+
+    tok_embed: np.ndarray   # (V, d)
+    layers: list            # list of per-layer dicts
+    final_norm: np.ndarray  # (d,)
+    lm_head: np.ndarray     # (V, d)
+
+
+def load_gptoss(weights: dict, cfg: GptOssConfig) -> GptOssParams:
+    """Map HF-named weight arrays into ``GptOssParams``.
+
+    HF weight names (no un-permute — rotate-half layout as-is)::
+
+        model.embed_tokens.weight                              (V, d)
+        model.norm.weight                                      (d,)
+        lm_head.weight                                         (V, d)  [absent → tie to embed]
+
+    Per layer ``model.layers.{i}`` — note attention carries q/k/v/o **biases**::
+
+        .input_layernorm.weight                  (d,)
+        .post_attention_layernorm.weight         (d,)
+        .self_attn.q_proj.weight                 (n_heads    * head_dim, d)
+        .self_attn.q_proj.bias                   (n_heads    * head_dim,)
+        .self_attn.k_proj.weight                 (n_kv_heads * head_dim, d)
+        .self_attn.k_proj.bias                   (n_kv_heads * head_dim,)
+        .self_attn.v_proj.weight                 (n_kv_heads * head_dim, d)
+        .self_attn.v_proj.bias                   (n_kv_heads * head_dim,)
+        .self_attn.o_proj.weight                 (d, n_heads * head_dim)
+        .self_attn.o_proj.bias                   (d,)
+        .self_attn.sinks                         (n_heads,)
+        .mlp.router.weight                       (num_experts, d)
+        .mlp.router.bias                         (num_experts,)
+        .mlp.experts.gate_up_proj                (num_experts, d, 2 * intermediate)
+        .mlp.experts.gate_up_proj_bias           (num_experts, 2 * intermediate)
+        .mlp.experts.down_proj                   (num_experts, intermediate, d)
+        .mlp.experts.down_proj_bias              (num_experts, d)
+    """
+    raise NotImplementedError("Implement load_gptoss — see 309_gptoss_model/README.md")
+
+
+def gptoss_forward(
+    input_ids: np.ndarray,
+    params: GptOssParams,
+    cfg: GptOssConfig,
+    start_pos: int = 0,
+) -> np.ndarray:
+    """Token embed → N GPT-OSS blocks → final RMSNorm → lm_head logits.
+
+    Returns logits of shape ``(B, L, V)``.
+
+    GPT-OSS = rotate-half Llama with **attention sinks** and the **GPT-OSS MoE**.
+    Compose from granular L2 primitives (NOT ``llama_decoder_block``):
+
+      ``embedding`` → per layer [``rms_norm`` → q/k/v ``affine`` (WITH bias) +
+      head-split → ``rope_half`` on q & k → repeat-kv + scores ``* head_dim**-0.5``
+      → ``attention_with_sinks`` with the layer mask → ``@ v`` → merge + o_proj
+      (WITH bias) → ``add_residual`` → ``rms_norm`` → ``gptoss_moe_ffn`` → residual]
+      → final ``rms_norm`` → ``@ lm_head.T``.
+
+    Even-indexed layers (0, 2, …) use ``sliding_window_mask`` (305); odd-indexed
+    layers use full causal.  RoPE is default rotate-half (``rope_half``); the real
+    GPT-OSS checkpoint's YaRN long-context scaling is deferred to 307 / L4.
+    """
+    raise NotImplementedError("Implement gptoss_forward — see 309_gptoss_model/README.md")

@@ -15,8 +15,8 @@ __pycache__/
 304_generate/benchmark_samples.jsonl
 305_sliding_window_attention/mistral_tiny.npz
 306_qk_norm/qwen3_0_6b.npz
-307_mixtral_model/mixtral_tiny.npz
-308_deepseek_model/deepseek_tiny.npz
-309_gemma_model/gemma_tiny.npz
-310_gptoss_model/gptoss_tiny.npz
-311_llama31_model/llama31_tiny.npz
+308_mixtral_model/mixtral_tiny.npz
+311_deepseek_model/deepseek_tiny.npz
+310_gemma_model/gemma_tiny.npz
+309_gptoss_model/gptoss_tiny.npz
+307_llama31_model/llama31_tiny.npz

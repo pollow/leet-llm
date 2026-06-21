@@ -79,8 +79,8 @@ weights — and the golden — come from. Pick the **highest tier the architectu
 **Decision rule.** Prefer **C** when a *small, ungated* real checkpoint exists
 (≈≤1 GB, no license gate — e.g. stories15M, Qwen3-0.6B). Fall back to **B** when the
 family has no small real checkpoint but a tiny-random one loads (e.g. Mistral 305,
-Mixtral 307, Gemma-2 309 — Gemma ships only 2B/9B/27B, all large + gated). **Omit B/C**
-(Tier A only) when no public checkpoint loads under the task's math (e.g. DeepSeek 308:
+Mixtral 308, Gemma-2 310 — Gemma ships only 2B/9B/27B, all large + gated). **Omit B/C**
+(Tier A only) when no public checkpoint loads under the task's math (e.g. DeepSeek 311:
 the only tiny checkpoints use yarn+interleaved RoPE, out of scope) — and **say so in the
 README**. Before claiming a checkpoint is absent/unusable, *verify it* (`list_repo_files`,
 read its `config.json`) — don't assume from the name or guess its size.

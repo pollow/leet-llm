@@ -18,13 +18,13 @@
 |---|---|---|---|---|---|
 | 305 | Mistral | `sliding_window_mask` ✓done | rope_half, sdpa, rms_norm, swiglu_ffn, band mask | `hf-internal-testing/tiny-random-MistralForCausalLM` (2M, loads) | retrofit (small) |
 | 306 | Qwen3 | `qk_norm` ✓done | rope_half, sdpa, rms_norm, swiglu_ffn, qk_norm | `Qwen/Qwen3-0.6B` (~1.2 GB, download.sh) | retrofit (small) |
-| 307 | Mixtral | `moe_ffn` | 303 assembly, swiglu_ffn, top_k, softmax | tiny-random-Mixtral (probe) | medium |
-| 308 | DeepSeek-V3 | `mla_project` + reuse `moe_ffn` | 307, rope_half | tiny-random-DeepseekV3 (probe) | large |
-| 309 | Gemma-2 | `softcap`, `geglu_ffn` + reuse 305 band, rope_half | 303 assembly | tiny-random / gemma-2-2b (probe) | large |
-| 310 | GPT-OSS | `attention_with_sinks` + reuse `moe_ffn` | 307, rope (+yarn 311) | tiny-random-GptOss (probe) | medium |
-| 311 | Llama-3.1 | `rope_scaled_freqs` (+ rope variant accepting `inv_freq`) | 303 assembly | Llama-3.2-1B (download.sh) | small–medium |
+| 308 | Mixtral | `moe_ffn` | 303 assembly, swiglu_ffn, top_k, softmax | tiny-random-Mixtral (probe) | medium |
+| 311 | DeepSeek-V3 | `mla_project` + reuse `moe_ffn` | 308, rope_half | tiny-random-DeepseekV3 (probe) | large |
+| 310 | Gemma-2 | `softcap`, `geglu_ffn` + reuse 305 band, rope_half | 303 assembly | tiny-random / gemma-2-2b (probe) | large |
+| 309 | GPT-OSS | `attention_with_sinks` + reuse `moe_ffn` | 308, rope (+yarn 307) | tiny-random-GptOss (probe) | medium |
+| 307 | Llama-3.1 | `rope_scaled_freqs` (+ rope variant accepting `inv_freq`) | 303 assembly | Llama-3.2-1B (download.sh) | small–medium |
 
-`moe_ffn` lives in 307 (Mixtral, canonical MoE) and is imported by 308/310. `softcap` lives in 309 (Gemma); `attention_with_sinks` in 310; `mla_project` in 308. **Slugs:** 305/306 keep their existing operator-named folders (already committed) and gain model functions; new tasks 307–311 use family-named folders (`307_mixtral_model`, `308_deepseek_model`, `309_gemma_model`, `310_gptoss_model`, `311_llama31_model`). (Optional cosmetic rename of 305/306 → `*_model` deferred to finalization.)
+`moe_ffn` lives in 308 (Mixtral, canonical MoE) and is imported by 311/309. `softcap` lives in 310 (Gemma); `attention_with_sinks` in 309; `mla_project` in 311. **Slugs:** 305/306 keep their existing operator-named folders (already committed) and gain model functions; new tasks 308–307 use family-named folders (`308_mixtral_model`, `311_deepseek_model`, `310_gemma_model`, `309_gptoss_model`, `307_llama31_model`). (Optional cosmetic rename of 305/306 → `*_model` deferred to finalization.)
 
 ---
 
@@ -41,14 +41,14 @@
 
 3. **Ship UNSOLVED (deliverable = tests + fixtures).** Both the learner stub `<file>.py` and `solution.py` are **byte-identical** and raise `NotImplementedError`; the learner writes `solution.py`. Validate by **temporarily** drafting a real `solution.py`, running `uv run grade -s 3NN` (the L2 deps ARE solved — `grade -s 303` passes), then **reverting** `solution.py` before commit; confirm `uv run grade 3NN` (stub) fails **cleanly** (only `NotImplementedError`, no collection/import/KeyError).
 
-4. **Lean stubs, math in the README.** Stub docstrings stay 215-style (name the building blocks + one-line orientation); the closed-form math lives only in `README.md`'s "The Math" section. READMEs never mention `grade -s`. README shape: Description · The Math · Function Signatures · Read More · How to Test, naming each family wrinkle as architecture-as-spec with **GIVEN HF facts** (config fields, weight names, layout). The `→ L4` line stays where a cache/serving facet is deferred (305 windowed eviction, 308/310 latent/streaming cache, 311 long-context decode).
+4. **Lean stubs, math in the README.** Stub docstrings stay 215-style (name the building blocks + one-line orientation); the closed-form math lives only in `README.md`'s "The Math" section. READMEs never mention `grade -s`. README shape: Description · The Math · Function Signatures · Read More · How to Test, naming each family wrinkle as architecture-as-spec with **GIVEN HF facts** (config fields, weight names, layout). The `→ L4` line stays where a cache/serving facet is deferred (305 windowed eviction, 311/309 latent/streaming cache, 307 long-context decode).
 
 5. **Test weight tiers — pick the highest the architecture allows.** Each task's grade-time golden comes from one of three tiers (mirrored in `CLAUDE.md`):
    - **A — local-random → our float64 oracle** (always-on, `rtol≈1e-9`; faithfulness anchored against the genuine HF class at **authoring time only** per decision 2).
    - **B — tiny-random `hf-internal-testing/*` checkpoint** (skippable; golden = **genuine HF class** on *random* weights → no demo, but the only grade-time genuine-HF cross-check + real loader coverage).
    - **C — real pretrained** (skippable; the forward *does something* — 302 translate, 304 story, 306 Qwen3-0.6B).
 
-   **Rule:** prefer **C** when a small, ungated real checkpoint exists (≈≤1 GB, no gate); fall back to **B** when the family has no small real checkpoint but a tiny-random one loads (305 Mistral, 307 Mixtral, **309 Gemma-2** — Gemma ships only 2B/9B/27B, large + gated, so no Tier C); **omit B/C** (Tier A only) when no public checkpoint loads under the task's math (308 DeepSeek — tiny checkpoints are yarn+interleaved, out of scope), and document the omission in the README. **Always verify a checkpoint before declaring it absent/unusable** (`list_repo_files`, read `config.json`); never assume from the name or guess its size. (The Gemma tiny-random checkpoint `hf-internal-testing/tiny-random-Gemma2ForCausalLM` exists — `hidden=32`, 1 layer — and is what 309 Tier B uses; it is *not* gemma-2-2b.)
+   **Rule:** prefer **C** when a small, ungated real checkpoint exists (≈≤1 GB, no gate); fall back to **B** when the family has no small real checkpoint but a tiny-random one loads (305 Mistral, 308 Mixtral, **310 Gemma-2** — Gemma ships only 2B/9B/27B, large + gated, so no Tier C); **omit B/C** (Tier A only) when no public checkpoint loads under the task's math (311 DeepSeek — tiny checkpoints are yarn+interleaved, out of scope), and document the omission in the README. **Always verify a checkpoint before declaring it absent/unusable** (`list_repo_files`, read `config.json`); never assume from the name or guess its size. (The Gemma tiny-random checkpoint `hf-internal-testing/tiny-random-Gemma2ForCausalLM` exists — `hidden=32`, 1 layer — and is what 310 Tier B uses; it is *not* gemma-2-2b.)
 
 ---
 
@@ -78,7 +78,7 @@
 
 ---
 
-## Task 307: `307_mixtral_model` — **Mixtral** (introduces `moe_ffn`)
+## Task 308: `308_mixtral_model` — **Mixtral** (introduces `moe_ffn`)
 
 **Delta:** Mixtral = Llama with a **sparse MoE FFN** replacing SwiGLU: router → top-k → softmax-over-selected-k gate → `Σ_k gate_k · SwiGLU_{e_k}(x)`. RoPE rotate-half.
 
@@ -89,9 +89,9 @@
 
 ---
 
-## Task 308: `308_deepseek_model` — **DeepSeek-V3** (MLA + MoE)
+## Task 311: `311_deepseek_model` — **DeepSeek-V3** (MLA + MoE)
 
-**Delta:** DeepSeek = Llama with **Multi-head Latent Attention** (low-rank KV via a latent `c_kv`, up-projected per head; decoupled-RoPE slice carries position via `rope_half`) **and** MoE FFN (reuse `moe_ffn` from 307, plus DeepSeek's shared-expert + sigmoid-gate specifics as GIVEN). Forward-pass arithmetic only; the latent-KV **cache** is **→ L4**.
+**Delta:** DeepSeek = Llama with **Multi-head Latent Attention** (low-rank KV via a latent `c_kv`, up-projected per head; decoupled-RoPE slice carries position via `rope_half`) **and** MoE FFN (reuse `moe_ffn` from 308, plus DeepSeek's shared-expert + sigmoid-gate specifics as GIVEN). Forward-pass arithmetic only; the latent-KV **cache** is **→ L4**.
 
 - [ ] **Step 1: Stubs** — operator `mla_project(x, w_dkv, w_uk, w_uv, …) -> (K, V)` (+ decoupled-RoPE slice via `rope_half`) **and** `DeepseekConfig`/`DeepseekParams`/`load_deepseek`/`deepseek_forward` (reuse `moe_ffn`). Byte-identical solution.
 - [ ] **Step 2: Hermetic fixture** — tiny seeded `DeepseekV3ForCausalLM`, float64, weights (`kv_a_proj_with_mqa`, `kv_b_proj`, `q_*`, experts) + float64-oracle logits → `tiny_deepseek.npz`; HF-anchor.
@@ -100,7 +100,7 @@
 
 ---
 
-## Task 309: `309_gemma_model` — **Gemma-2** (the heaviest re-skin)
+## Task 310: `310_gemma_model` — **Gemma-2** (the heaviest re-skin)
 
 **Delta bundle:** GeGLU FFN (`geglu_ffn`, GELU gate vs SwiGLU's SiLU); **`(1+w)` RMSNorm**; **√d embedding scale**; **sandwich norm** (`input` + `post_attention` + `pre_feedforward` + `post_feedforward`); **attention logit soft-cap** + **final logit soft-cap** (`softcap`); **rotate-half RoPE** (`rope_half`); **alternating sliding/full layers** (reuse 305 `sliding_window_mask` per layer index).
 
@@ -113,9 +113,9 @@
 
 ---
 
-## Task 310: `310_gptoss_model` — **GPT-OSS** (attention sinks + MoE)
+## Task 309: `309_gptoss_model` — **GPT-OSS** (attention sinks + MoE)
 
-**Delta:** GPT-OSS = Llama with **attention sinks** (an extra learned per-head logit in the softmax denominator: `softmax([scores ; sink])`, drop the sink column → rows sum `< 1`) **and** MoE FFN (reuse `moe_ffn`). YaRN rope (reuse 311 `rope_scaled_freqs` if ordering allows, else GIVEN). Sink streaming eviction is **→ L4**.
+**Delta:** GPT-OSS = Llama with **attention sinks** (an extra learned per-head logit in the softmax denominator: `softmax([scores ; sink])`, drop the sink column → rows sum `< 1`) **and** MoE FFN (reuse `moe_ffn`). YaRN rope (reuse 307 `rope_scaled_freqs` if ordering allows, else GIVEN). Sink streaming eviction is **→ L4**.
 
 - [ ] **Step 1: Stubs** — operator `attention_with_sinks(scores, sink_logits, mask=None)` **and** `GptOssConfig`/`GptOssParams`/`load_gptoss`/`gptoss_forward` (reuse `moe_ffn`). Byte-identical solution.
 - [ ] **Step 2: Hermetic fixture** — tiny seeded `GptOssForCausalLM`, float64, weights + float64-oracle logits → `tiny_gptoss.npz`; HF-anchor.
@@ -123,21 +123,21 @@
 - [ ] **Step 4: Tests** — whole-model parity + sink invariants (rows sum to `1 − sink_mass`; `sink_logits=-inf` recovers plain softmax) + MoE reuse. **Step 5:** registry `attention_with_sinks`,`GptOssConfig`,`load_gptoss`,`gptoss_forward`. **Step 6:** README (→ L4 streaming eviction). **Steps 7–8:** validate, clean unsolved, commit.
 
 **Authoring notes (resolved at scaffold time, 2026-06-20):**
-- **MoE is NOT reused from 307.** `modeling_gpt_oss.py`'s MoE differs from Mixtral's
+- **MoE is NOT reused from 308.** `modeling_gpt_oss.py`'s MoE differs from Mixtral's
   in every routing/expert detail — biased router, softmax over the *selected* top-k
   (not all experts), biased experts, **interleaved** gate/up (`::2`/`1::2`), and a
   clamped GLU `(up+1)·gate·σ(1.702·gate)`, with weights applied as `x @ W` (no
-  transpose). Reusing `moe_ffn` would break the genuine-HF anchor (decision 2), so 310
+  transpose). Reusing `moe_ffn` would break the genuine-HF anchor (decision 2), so 309
   ships a **dedicated `gptoss_moe_ffn`** operator (registered). The plan's "reuse
   `moe_ffn`" line is superseded.
 - **Attention carries q/k/v/o biases** (`config.attention_bias=True`) — unlike
   Llama/Mistral. `load_gptoss`/`gptoss_forward` thread the biases through.
-- **RoPE = default rotate-half (`rope_half`); YaRN deferred to 311.** GPT-OSS's real
+- **RoPE = default rotate-half (`rope_half`); YaRN deferred to 307.** GPT-OSS's real
   RoPE is YaRN (`factor=32`, `original_max_position_embeddings=4096`), which needs
-  311's `rope_scaled_freqs`. Both tiers force `rope_type="default"`: the Tier-A fixture
+  307's `rope_scaled_freqs`. Both tiers force `rope_type="default"`: the Tier-A fixture
   config sets it; `convert.py` overrides the tiny-random checkpoint (which *declares*
-  yarn) to default before the cross-check (analogous to 307 forcing `hidden_act=silu`).
-  When 311 lands, swap `rope_scaled_freqs` into `gptoss_forward` to close the gap.
+  yarn) to default before the cross-check (analogous to 308 forcing `hidden_act=silu`).
+  When 307 lands, swap `rope_scaled_freqs` into `gptoss_forward` to close the gap.
 - **Tier B chosen; Tier C omitted (decision 5).** Verified `hf-internal-testing/
   tiny-random-GptOssForCausalLM` loads (`hidden=64`, 2 layers, head_dim=16, 4 experts)
   → used for Tier B. The smallest *real* checkpoint, `openai/gpt-oss-20b`, is **27.5 GB**
@@ -149,7 +149,7 @@
 
 ---
 
-## Task 311: `311_llama31_model` — **Llama-3.1** (long-context RoPE scaling)
+## Task 307: `307_llama31_model` — **Llama-3.1** (long-context RoPE scaling)
 
 **Delta:** Llama-3.1 = 303's Llama with **`inv_freq` rescaled** per a `rope_scaling` config (linear / dynamic-NTK / llama3 / yarn). Needs a rope variant that accepts a precomputed `inv_freq` (213's rope functions take only `base`) — add `rope_from_freqs` (or extend) so the scaled frequencies feed rotation. Long-context decode is **→ L4**.
 
@@ -162,7 +162,7 @@
 
 ## Finalization
 
-- [ ] Update root `README.md` L3 row → Track C = whole-model forwards per OSS family (305 Mistral, 306 Qwen3, 307 Mixtral, 308 DeepSeek, 309 Gemma-2, 310 GPT-OSS, 311 Llama-3.1).
+- [ ] Update root `README.md` L3 row → Track C = whole-model forwards per OSS family (305 Mistral, 306 Qwen3, 308 Mixtral, 311 DeepSeek, 310 Gemma-2, 309 GPT-OSS, 307 Llama-3.1).
 - [ ] Pin `transformers>=5.0` in the `gen` group.
 - [ ] Confirm `_registry.py` resolves all new names; each unsolved `uv run grade 3NN` fails cleanly; each `uv run grade -s 3NN` (with a drafted solution during dev) passes.
 - [ ] (Optional) cosmetic rename 305/306 folders → `*_model`.
@@ -172,7 +172,7 @@
 
 **End goal:** each task yields a runnable `<family>_forward` matching the genuine HF model's logits — on a committed tiny hermetic fixture (always-on, float64 oracle, HF-anchored) and on real downloaded weights (skippable, `download.sh` + `real_ref.npz`). ✓ maps to the user's "forward pass for each OSS model on its tiny weights."
 
-**Reuse compounds:** operators registered once (`moe_ffn` 307 → 308/310; `softcap` 309; `rope_half` 213 → 306/308/309), assembly from 303. New per-family surface = Config/load/forward + the one delta.
+**Reuse compounds:** operators registered once (`moe_ffn` 308 → 311/309; `softcap` 310; `rope_half` 213 → 306/311/310), assembly from 303. New per-family surface = Config/load/forward + the one delta.
 
 **Numerics:** float32-cast anchoring (decision 2) keeps tight student grading while proving the oracle faithful to the genuine class. Real-weights goldens use documented tolerances.
 
