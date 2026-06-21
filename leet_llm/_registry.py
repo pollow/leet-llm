@@ -127,4 +127,10 @@ REGISTRY: dict[str, tuple[str, str]] = {
     "GemmaParams": ("309_gemma_model", "GemmaParams"),
     "load_gemma": ("309_gemma_model", "load_gemma"),
     "gemma_forward": ("309_gemma_model", "gemma_forward"),
+    "attention_with_sinks": ("310_gptoss_model", "attention_with_sinks"),
+    "gptoss_moe_ffn": ("310_gptoss_model", "gptoss_moe_ffn"),
+    "GptOssConfig": ("310_gptoss_model", "GptOssConfig"),
+    "GptOssParams": ("310_gptoss_model", "GptOssParams"),
+    "load_gptoss": ("310_gptoss_model", "load_gptoss"),
+    "gptoss_forward": ("310_gptoss_model", "gptoss_forward"),
 }
