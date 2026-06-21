@@ -203,6 +203,11 @@ def gptoss_forward(
 - `307_mixtral_model/` — Mixtral's MoE, contrasted in the table above
 - Task 213 (`rope_half`), 005 (`softmax`), 007 (`top_k`)
 
+**No Tier C (real pretrained).** The smallest real GPT-OSS checkpoint,
+`openai/gpt-oss-20b`, is ~27.5 GB (MXFP4-quantized, 24 layers × 32 experts) — far
+over the curriculum's small-checkpoint bar — and uses YaRN RoPE. So there is no
+end-to-end demo; this task validates with random tiny weights (Tier B) only.
+
 **Real-weights layer (B):** `download.sh` fetches
 `hf-internal-testing/tiny-random-GptOssForCausalLM` (config + safetensors only),
 maps the HF names → `GptOssParams`, and commits `tests/fixtures/real_ref.npz` from a
