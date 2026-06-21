@@ -122,6 +122,31 @@
 - [ ] **Step 3: Real-weights** — probe tiny-random-GptOss; download.sh/real_ref if available.
 - [ ] **Step 4: Tests** — whole-model parity + sink invariants (rows sum to `1 − sink_mass`; `sink_logits=-inf` recovers plain softmax) + MoE reuse. **Step 5:** registry `attention_with_sinks`,`GptOssConfig`,`load_gptoss`,`gptoss_forward`. **Step 6:** README (→ L4 streaming eviction). **Steps 7–8:** validate, clean unsolved, commit.
 
+**Authoring notes (resolved at scaffold time, 2026-06-20):**
+- **MoE is NOT reused from 307.** `modeling_gpt_oss.py`'s MoE differs from Mixtral's
+  in every routing/expert detail — biased router, softmax over the *selected* top-k
+  (not all experts), biased experts, **interleaved** gate/up (`::2`/`1::2`), and a
+  clamped GLU `(up+1)·gate·σ(1.702·gate)`, with weights applied as `x @ W` (no
+  transpose). Reusing `moe_ffn` would break the genuine-HF anchor (decision 2), so 310
+  ships a **dedicated `gptoss_moe_ffn`** operator (registered). The plan's "reuse
+  `moe_ffn`" line is superseded.
+- **Attention carries q/k/v/o biases** (`config.attention_bias=True`) — unlike
+  Llama/Mistral. `load_gptoss`/`gptoss_forward` thread the biases through.
+- **RoPE = default rotate-half (`rope_half`); YaRN deferred to 311.** GPT-OSS's real
+  RoPE is YaRN (`factor=32`, `original_max_position_embeddings=4096`), which needs
+  311's `rope_scaled_freqs`. Both tiers force `rope_type="default"`: the Tier-A fixture
+  config sets it; `convert.py` overrides the tiny-random checkpoint (which *declares*
+  yarn) to default before the cross-check (analogous to 307 forcing `hidden_act=silu`).
+  When 311 lands, swap `rope_scaled_freqs` into `gptoss_forward` to close the gap.
+- **Tier B chosen; Tier C omitted (decision 5).** Verified `hf-internal-testing/
+  tiny-random-GptOssForCausalLM` loads (`hidden=64`, 2 layers, head_dim=16, 4 experts)
+  → used for Tier B. The smallest *real* checkpoint, `openai/gpt-oss-20b`, is **27.5 GB**
+  (MXFP4-quantized, 24 layers × 32 experts) + YaRN — far over the small-checkpoint bar,
+  so there is no Tier-C end-to-end demo. README states "no demo" without the size
+  rationale (which lives here).
+- **Anchors:** Tier-A numpy float64 oracle vs genuine `GptOssForCausalLM` (eager) max
+  diff **3.0e-5**; Tier-B real tiny weights cross-check max diff **2.0e-7**.
+
 ---
 
 ## Task 311: `311_llama31_model` — **Llama-3.1** (long-context RoPE scaling)
