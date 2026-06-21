@@ -133,4 +133,10 @@ REGISTRY: dict[str, tuple[str, str]] = {
     "GptOssParams": ("310_gptoss_model", "GptOssParams"),
     "load_gptoss": ("310_gptoss_model", "load_gptoss"),
     "gptoss_forward": ("310_gptoss_model", "gptoss_forward"),
+    "rope_scaled_freqs": ("311_llama31_model", "rope_scaled_freqs"),
+    "rope_from_freqs": ("311_llama31_model", "rope_from_freqs"),
+    "Llama31Config": ("311_llama31_model", "Llama31Config"),
+    "Llama31Params": ("311_llama31_model", "Llama31Params"),
+    "load_llama31": ("311_llama31_model", "load_llama31"),
+    "llama31_forward": ("311_llama31_model", "llama31_forward"),
 }
