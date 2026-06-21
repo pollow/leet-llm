@@ -43,6 +43,13 @@
 
 4. **Lean stubs, math in the README.** Stub docstrings stay 215-style (name the building blocks + one-line orientation); the closed-form math lives only in `README.md`'s "The Math" section. READMEs never mention `grade -s`. README shape: Description · The Math · Function Signatures · Read More · How to Test, naming each family wrinkle as architecture-as-spec with **GIVEN HF facts** (config fields, weight names, layout). The `→ L4` line stays where a cache/serving facet is deferred (305 windowed eviction, 308/310 latent/streaming cache, 311 long-context decode).
 
+5. **Test weight tiers — pick the highest the architecture allows.** Each task's grade-time golden comes from one of three tiers (mirrored in `CLAUDE.md`):
+   - **A — local-random → our float64 oracle** (always-on, `rtol≈1e-9`; faithfulness anchored against the genuine HF class at **authoring time only** per decision 2).
+   - **B — tiny-random `hf-internal-testing/*` checkpoint** (skippable; golden = **genuine HF class** on *random* weights → no demo, but the only grade-time genuine-HF cross-check + real loader coverage).
+   - **C — real pretrained** (skippable; the forward *does something* — 302 translate, 304 story, 306 Qwen3-0.6B).
+
+   **Rule:** prefer **C** when a small, ungated real checkpoint exists (≈≤1 GB, no gate); fall back to **B** when the family has no small real checkpoint but a tiny-random one loads (305 Mistral, 307 Mixtral, **309 Gemma-2** — Gemma ships only 2B/9B/27B, large + gated, so no Tier C); **omit B/C** (Tier A only) when no public checkpoint loads under the task's math (308 DeepSeek — tiny checkpoints are yarn+interleaved, out of scope), and document the omission in the README. **Always verify a checkpoint before declaring it absent/unusable** (`list_repo_files`, read `config.json`); never assume from the name or guess its size. (The Gemma tiny-random checkpoint `hf-internal-testing/tiny-random-Gemma2ForCausalLM` exists — `hidden=32`, 1 layer — and is what 309 Tier B uses; it is *not* gemma-2-2b.)
+
 ---
 
 ## Task 305 (retrofit): `305_sliding_window_attention` → add the **Mistral** whole-model
@@ -99,7 +106,7 @@
 
 - [ ] **Step 1: Stubs** — operators `softcap(x, cap)`, `geglu_ffn(...)` **and** `GemmaConfig` (`query_pre_attn_scalar`, `final_logit_softcapping`, `attn_logit_softcapping`, `sliding_window`), `GemmaParams`, `load_gemma`, `gemma_forward`. Byte-identical solution.
 - [ ] **Step 2: Hermetic fixture** — tiny seeded `Gemma2ForCausalLM` (2 layers → one sliding + one full), float64, weights + float64-oracle logits → `tiny_gemma.npz`; HF-anchor at `rtol≈1e-3`.
-- [ ] **Step 3: Real-weights** — probe tiny-random-Gemma2 / `gemma-2-2b` (large, license-gated — may be omitted); README notes.
+- [ ] **Step 3: Real-weights (Tier B, decision 5).** No small *real* Gemma-2 exists (only 2B/9B/27B, large + gated → no Tier C). Verified `hf-internal-testing/tiny-random-Gemma2ForCausalLM` **exists** (`hidden=32`, 1 layer, default RoPE) and use it for **Tier B**: `download.sh`+`convert.py` fetch it, commit `real_ref.npz` from the genuine `Gemma2ForCausalLM` (eager); skippable parity test. (Its `sliding_window=4096` ≥ L, so the band reduces to full causal there — alternation is covered by the Tier-A 2-layer fixture.)
 - [ ] **Step 4: Tests** — whole-model parity + ablation isolations for `(1+w)` norm and √d scale + per-layer sliding/full mask + softcap saturation. **Step 5:** registry `softcap`,`geglu_ffn`,`GemmaConfig`,`load_gemma`,`gemma_forward`. **Step 6:** README naming each wrinkle. **Steps 7–8:** validate, clean unsolved, commit.
 
 > The natural home for "a clean GPT, re-skinned": swapping norm/activation/scale/RoPE-convention turns Llama into Gemma with no new attention machinery.

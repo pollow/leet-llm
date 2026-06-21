@@ -55,6 +55,36 @@ and stories15M Llama) have reference solutions. L4–L6 not yet authored.
   `LEET_LLM_TARGET=solution`). Use this to verify a task's solution passes end-to-end.
   Keep this flag **out of per-task READMEs**; it must not be exposed to students.
 
+## Test weight tiers (how a task sources weights for grading)
+
+Every task grades against a committed golden. There are three tiers for where the
+weights — and the golden — come from. Pick the **highest tier the architecture allows**.
+
+- **Tier A — local-random → our oracle (every task).** `gen_fixtures.py` makes tiny
+  seeded random weights and freezes the logits of **our own float64 numpy oracle**. The
+  always-on grade-time check compares the student against this oracle at `rtol≈1e-9`. To
+  prove the oracle faithful (not self-circular) it is anchored against the genuine HF
+  class at **authoring time only** (decision 2 in the L3 plan) — that anchor does *not*
+  run at grade time.
+- **Tier B — tiny-random HF checkpoint (skippable).** `download.sh`/`convert.py` fetch a
+  `hf-internal-testing/tiny-random-*` checkpoint and commit a golden produced by the
+  **genuine HF class**. Weights are *random*, so the output is meaningless — there's no
+  demo — but it adds the only **grade-time** genuine-HF cross-check and exercises the real
+  HF weight-name layout through `load_*`. For random weights it partly overlaps Tier A's
+  authoring anchor; its marginal value is the independent grade-time oracle + loader cover.
+- **Tier C — real pretrained (skippable).** Download an actual trained model so the
+  forward *does something* (302 translates, 304 tells a story, 306 runs Qwen3-0.6B). This
+  is the strongest validation and the only one with a satisfying end-to-end demo.
+
+**Decision rule.** Prefer **C** when a *small, ungated* real checkpoint exists
+(≈≤1 GB, no license gate — e.g. stories15M, Qwen3-0.6B). Fall back to **B** when the
+family has no small real checkpoint but a tiny-random one loads (e.g. Mistral 305,
+Mixtral 307, Gemma-2 309 — Gemma ships only 2B/9B/27B, all large + gated). **Omit B/C**
+(Tier A only) when no public checkpoint loads under the task's math (e.g. DeepSeek 308:
+the only tiny checkpoints use yarn+interleaved RoPE, out of scope) — and **say so in the
+README**. Before claiming a checkpoint is absent/unusable, *verify it* (`list_repo_files`,
+read its `config.json`) — don't assume from the name or guess its size.
+
 ## Design docs (now and future)
 
 Specs and implementation plans live under `docs/superpowers/`, dated and kebab-cased:
