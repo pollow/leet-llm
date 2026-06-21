@@ -24,13 +24,17 @@ Hints:
   expert outputs.  GPT-OSS stores expert weights as ``x @ gate_up_proj[e]`` and
   ``gated @ down_proj[e]`` (no transpose), with gate = even cols, up = odd cols.
 - ``gptoss_forward``: compose ``embedding`` (201) → per layer [``rms_norm`` (212) →
-  q/k/v ``affine`` (003, WITH bias) + ``group_last_axis`` (001) → ``rope_half`` (213) on
-  q & k → repeat-kv + scores ``* head_dim**-0.5`` → ``attention_with_sinks`` with the
+  q/k/v ``affine`` (003, WITH bias) + ``group_last_axis`` (001) → YaRN RoPE on q & k →
+  repeat-kv + scores ``* head_dim**-0.5`` → ``attention_with_sinks`` with the
   layer's causal/sliding mask → ``@ v`` → merge + o_proj (WITH bias) → ``add_residual``
   (208) → ``rms_norm`` → ``gptoss_moe_ffn`` → residual] → final ``rms_norm`` →
   ``@ lm_head.T``.  Even layers (0, 2, …) use ``sliding_window_mask`` (305); odd layers
-  use full causal.  Use rotate-half RoPE (``rope_half``), NOT ``llama_decoder_block``
-  (216, interleaved-only).
+  use full causal.
+- **YaRN RoPE (reused from 307):** GPT-OSS's real RoPE is YaRN long-context scaling.
+  Compute ``inv_freq = rope_scaled_freqs(head_dim, rope_base, cfg.rope_scaling)`` and
+  ``af = rope_attention_scale(cfg.rope_scaling)`` once, then rotate q & k with
+  ``rope_from_freqs(.., positions, inv_freq) * af`` (rotate-half, NOT
+  ``llama_decoder_block`` 216).  ``cfg.rope_scaling=None`` → plain rotate-half RoPE.
 """
 
 from __future__ import annotations
@@ -175,6 +179,10 @@ class GptOssConfig:
         RoPE base frequency (``rope_theta``).
     max_seq_len:
         Maximum sequence length (position indices).
+    rope_scaling:
+        GPT-OSS's RoPE schedule — a ``rope_scaling`` dict passed to
+        ``rope_scaled_freqs`` / ``rope_attention_scale`` (307).  GPT-OSS ships
+        ``rope_type="yarn"``; ``None`` falls back to default rotate-half RoPE.
     """
 
     dim: int
@@ -190,6 +198,7 @@ class GptOssConfig:
     norm_eps: float = 1e-5
     rope_base: float = 150000.0
     max_seq_len: int = 4096
+    rope_scaling: dict | None = None
 
 
 @dataclass(frozen=True)
@@ -260,13 +269,16 @@ def gptoss_forward(
     Compose from granular L2 primitives (NOT ``llama_decoder_block``):
 
       ``embedding`` → per layer [``rms_norm`` → q/k/v ``affine`` (WITH bias) +
-      head-split → ``rope_half`` on q & k → repeat-kv + scores ``* head_dim**-0.5``
+      head-split → YaRN RoPE on q & k → repeat-kv + scores ``* head_dim**-0.5``
       → ``attention_with_sinks`` with the layer mask → ``@ v`` → merge + o_proj
       (WITH bias) → ``add_residual`` → ``rms_norm`` → ``gptoss_moe_ffn`` → residual]
       → final ``rms_norm`` → ``@ lm_head.T``.
 
     Even-indexed layers (0, 2, …) use ``sliding_window_mask`` (305); odd-indexed
-    layers use full causal.  RoPE is default rotate-half (``rope_half``); the real
-    GPT-OSS checkpoint's YaRN long-context scaling is deferred to 307 / L4.
+    layers use full causal.  RoPE is GPT-OSS's real **YaRN** schedule, reused from
+    307: ``inv_freq = rope_scaled_freqs(head_dim, rope_base, cfg.rope_scaling)`` and
+    ``af = rope_attention_scale(cfg.rope_scaling)``, applied as
+    ``rope_from_freqs(.., positions, inv_freq) * af`` on q & k (rotate-half).  The
+    long-context KV-cache (streaming sink eviction) is deferred to L4.
     """
     raise NotImplementedError("Implement gptoss_forward — see 309_gptoss_model/README.md")

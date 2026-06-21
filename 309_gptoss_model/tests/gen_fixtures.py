@@ -15,8 +15,9 @@ at rtol=1e-9.
 As an authoring sanity check we also assert the numpy oracle matches a genuine
 ``GptOssForCausalLM`` (float32, eager attention) at rtol=1e-3/atol=1e-3.  We force
 ``attn_implementation='eager'`` (the explicit-softmax-with-sink path our oracle
-mirrors) and ``rope_type='default'`` (the real checkpoint uses YaRN long-context
-scaling, deferred to 307 / L4 — see README).  Max observed diff is documented below.
+mirrors).  RoPE is GPT-OSS's real **YaRN** schedule (``rope_type='yarn'``), reused
+from 307 (``rope_scaled_freqs`` + ``rope_attention_scale``).  Max observed diff is
+documented below.
 
 Architecture exercised in the tiny config (2 layers):
   layer 0: sliding_attention (even-indexed) — band mask active at L=6, window=3
@@ -25,6 +26,8 @@ Architecture exercised in the tiny config (2 layers):
 
 from __future__ import annotations
 
+import json
+import math
 import pathlib
 
 import numpy as np
@@ -49,6 +52,16 @@ LIMIT = 7.0
 L = 6            # sequence length
 N_GROUPS = H // KVH
 
+# GPT-OSS's real RoPE is YaRN long-context scaling (reused from 307).
+YARN_SCALING = {
+    "rope_type": "yarn",
+    "factor": 32.0,
+    "original_max_position_embeddings": 64,
+    "beta_fast": 32.0,
+    "beta_slow": 1.0,
+    "truncate": False,
+}
+
 
 # ─── numpy float64 primitives ────────────────────────────────────────────────
 
@@ -58,17 +71,43 @@ def _rms_norm(x: np.ndarray, w: np.ndarray, eps: float) -> np.ndarray:
     return (x64 / rms) * w.astype(np.float64)
 
 
-def _rope_half(x: np.ndarray, positions: np.ndarray, base: float, head_dim: int) -> np.ndarray:
-    """Rotate-half RoPE. x: (B, H, L, head_dim), positions: (L,)."""
+def _yarn_inv_freq(head_dim: int, base: float, sc: dict) -> np.ndarray:
+    """YaRN inverse frequencies (float64) — mirrors transformers _compute_yarn_parameters."""
+    dim = head_dim
+    factor = sc["factor"]
+    old = sc["original_max_position_embeddings"]
+    beta_fast, beta_slow = sc.get("beta_fast", 32), sc.get("beta_slow", 1)
+    truncate = sc.get("truncate", True)
+    pos_freqs = base ** (np.arange(0, dim, 2, dtype=np.float64) / dim)
+    extrap, interp = 1.0 / pos_freqs, 1.0 / (factor * pos_freqs)
+
+    def fcd(num_rot):
+        return (dim * math.log(old / (num_rot * 2 * math.pi))) / (2 * math.log(base))
+
+    low, high = fcd(beta_fast), fcd(beta_slow)
+    if truncate:
+        low, high = math.floor(low), math.ceil(high)
+    low, high = max(low, 0), min(high, dim - 1)
+    if low == high:
+        high += 0.001
+    ramp = np.clip((np.arange(dim // 2, dtype=np.float64) - low) / (high - low), 0, 1)
+    extrap_factor = 1 - ramp
+    return interp * (1 - extrap_factor) + extrap * extrap_factor
+
+
+def _yarn_attention_scale(sc: dict) -> float:
+    factor = sc["factor"]
+    return 0.1 * math.log(factor) + 1.0 if factor > 1 else 1.0
+
+
+def _rope_apply(x: np.ndarray, positions: np.ndarray, inv_freq: np.ndarray) -> np.ndarray:
+    """Rotate-half RoPE with a precomputed inv_freq. x: (B, H, L, head_dim)."""
     x64 = x.astype(np.float64)
-    idx = np.arange(0, head_dim, 2, dtype=np.float64)
-    inv_freq = 1.0 / (base ** (idx / head_dim))
     angle = np.outer(positions.astype(np.float64), inv_freq)        # (L, head_dim/2)
-    cos = np.concatenate([np.cos(angle), np.cos(angle)], axis=-1)   # (L, head_dim)
-    sin = np.concatenate([np.sin(angle), np.sin(angle)], axis=-1)
-    cos = cos[np.newaxis, np.newaxis, :, :]
-    sin = sin[np.newaxis, np.newaxis, :, :]
-    x1, x2 = x64[..., :head_dim // 2], x64[..., head_dim // 2:]
+    cos = np.concatenate([np.cos(angle), np.cos(angle)], axis=-1)[np.newaxis, np.newaxis]
+    sin = np.concatenate([np.sin(angle), np.sin(angle)], axis=-1)[np.newaxis, np.newaxis]
+    hd = x64.shape[-1]
+    x1, x2 = x64[..., :hd // 2], x64[..., hd // 2:]
     return x64 * cos + np.concatenate([-x2, x1], axis=-1) * sin
 
 
@@ -111,6 +150,8 @@ def _moe(x, rw, rb, gup, gub, dp, db):
 
 def _composed_oracle_np(W: dict, ids: np.ndarray) -> np.ndarray:
     pos = np.arange(L, dtype=np.int64)
+    inv_freq = _yarn_inv_freq(HEAD_DIM, ROPE_BASE, YARN_SCALING)
+    af = _yarn_attention_scale(YARN_SCALING)
     h = W["model.embed_tokens.weight"].astype(np.float64)[ids[0]][np.newaxis]  # (1, L, d)
     scale = float(HEAD_DIM) ** -0.5
 
@@ -133,8 +174,8 @@ def _composed_oracle_np(W: dict, ids: np.ndarray) -> np.ndarray:
         k = k.reshape(B, Lseq, KVH, HEAD_DIM).transpose(0, 2, 1, 3)
         v = v.reshape(B, Lseq, KVH, HEAD_DIM).transpose(0, 2, 1, 3)
 
-        q = _rope_half(q, pos, ROPE_BASE, HEAD_DIM)
-        k = _rope_half(k, pos, ROPE_BASE, HEAD_DIM)
+        q = _rope_apply(q, pos, inv_freq) * af
+        k = _rope_apply(k, pos, inv_freq) * af
 
         k = np.repeat(k, N_GROUPS, axis=1)
         v = np.repeat(v, N_GROUPS, axis=1)
@@ -226,7 +267,7 @@ def main() -> None:
             max_position_embeddings=128,
             sliding_window=SWA_WINDOW,
             tie_word_embeddings=False,
-            rope_parameters={"rope_type": "default", "rope_theta": ROPE_BASE},
+            rope_parameters={**YARN_SCALING, "rope_theta": ROPE_BASE},
             attn_implementation="eager",
         )
         hf_model = GptOssForCausalLM(hf_cfg)
@@ -267,6 +308,7 @@ def main() -> None:
         norm_eps=np.array(EPS),
         rope_base=np.array(ROPE_BASE),
         max_seq_len=np.array(128),
+        rope_scaling=np.array(json.dumps(YARN_SCALING)),
         **W,
     )
     print(f"  wrote tiny_gptoss.npz  logits{oracle_logits.shape}")

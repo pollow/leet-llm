@@ -11,13 +11,14 @@ Categories:
   2. Whole-model parity (A) — ``gptoss_forward`` vs the composed float64 oracle in
      ``tiny_gptoss.npz`` at ``rtol=1e-9``.
   3. Wrinkle isolations observed THROUGH ``gptoss_forward`` (sinks lower the row mass;
-     alternating sliding/full masks; causal).
+     alternating sliding/full masks; causal; the YaRN RoPE schedule is wired in).
   4. Real-weights parity (B, skippable) — ``gptoss_forward`` vs ``real_ref.npz`` logits
-     from a genuine ``GptOssForCausalLM``. Run ``309_gptoss_model/download.sh`` first.
+     from a genuine ``GptOssForCausalLM`` (native YaRN). Run ``309_gptoss_model/download.sh`` first.
 """
 
 from __future__ import annotations
 
+import json
 import pathlib
 
 import numpy as np
@@ -242,7 +243,7 @@ def test_moe_clamps_preactivations():
 # 2. Whole-model parity — tiny hermetic fixture (always-on)
 # ---------------------------------------------------------------------------
 
-def _tiny_cfg():
+def _tiny_cfg(rope_scaling="__keep__"):
     return GptOssConfig(
         dim=int(_TINY["dim"]),
         n_layers=int(_TINY["n_layers"]),
@@ -257,6 +258,7 @@ def _tiny_cfg():
         norm_eps=float(_TINY["norm_eps"]),
         rope_base=float(_TINY["rope_base"]),
         max_seq_len=int(_TINY["max_seq_len"]),
+        rope_scaling=json.loads(str(_TINY["rope_scaling"])) if rope_scaling == "__keep__" else rope_scaling,
     )
 
 
@@ -304,6 +306,16 @@ def test_gptoss_alternating_sliding_full_masks():
     )
 
 
+def test_gptoss_yarn_rope_is_wired():
+    """GPT-OSS's YaRN schedule is actually applied: yarn ≠ default rotate-half RoPE."""
+    p = _tiny_params()
+    out_yarn = gptoss_forward(_TINY["input_ids"], p, _tiny_cfg())
+    out_default = gptoss_forward(_TINY["input_ids"], p, _tiny_cfg(rope_scaling=None))
+    assert not np.allclose(out_yarn, out_default, atol=1e-6), (
+        "rope_scaling had no effect — YaRN inv_freq / attention scale not used"
+    )
+
+
 # ---------------------------------------------------------------------------
 # B. Real-weights parity — skippable (run download.sh first)
 # ---------------------------------------------------------------------------
@@ -319,8 +331,8 @@ _REAL_REF = FIX / "real_ref.npz"
 def test_gptoss_real_weights_logits():
     """gptoss_forward on the real tiny-random-GptOss weights must match real_ref.npz.
 
-    real_ref.npz logits were produced by a genuine GptOssForCausalLM (eager, float32,
-    rope_type forced to 'default' — the checkpoint's YaRN scaling is deferred to 307).
+    real_ref.npz logits were produced by a genuine GptOssForCausalLM (eager, float32)
+    with its native YaRN long-context schedule active (reused from 307).
     Our forward runs in float64 on the same weights: tolerance rtol=1e-2/atol=1e-2.
     """
     ref = np.load(_REAL_REF)
@@ -339,6 +351,7 @@ def test_gptoss_real_weights_logits():
         norm_eps=float(ref["norm_eps"]),
         rope_base=float(ref["rope_base"]),
         max_seq_len=int(ref["max_seq_len"]),
+        rope_scaling=json.loads(str(ref["rope_scaling"])),
     )
     params = load_gptoss(weights, cfg)
     out = gptoss_forward(ref["input_ids"], params, cfg)

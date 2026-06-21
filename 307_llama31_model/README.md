@@ -9,7 +9,7 @@ RMSNorm and rotate-half RoPE are all unchanged — only the *frequencies* that g
 the rotation are bent. You implement the frequency schedule and the apply step, then
 assemble a runnable `llama31_forward → logits`.
 
-Two new operators plus the whole-model assembly:
+Three new operators plus the whole-model assembly:
 
 1. **`rope_scaled_freqs(head_dim, base, scaling)`** — compute the per-pair inverse
    frequencies `inv_freq` for a `rope_type` (`default` / `linear` / `dynamic` /
@@ -20,7 +20,12 @@ Two new operators plus the whole-model assembly:
    **precomputed** `inv_freq`. Identical rotation to 213's `rope_half`; the only
    difference is that the (rescaled) frequencies are supplied rather than derived from
    `base`.
-3. **`Llama31Config` / `Llama31Params` / `load_llama31` / `llama31_forward`** — the
+3. **`rope_attention_scale(scaling)`** — the *other* half of RoPE scaling: a scalar
+   attention "temperature" multiplied into the rotated q & k. It is `1.0` for
+   `default`/`linear`/`dynamic`/`llama3` (so Llama-3.1 is a no-op) and the YaRN
+   `mscale` for `yarn`. Llama-3.1 itself never needs it (its `llama3` schedule scores
+   `1.0`), but it is **reused by GPT-OSS (309)**, whose real RoPE is YaRN.
+4. **`Llama31Config` / `Llama31Params` / `load_llama31` / `llama31_forward`** — the
    Llama-3.1 decoder-only model.
 
 **GIVEN — the Llama-3.1 wrinkle** (architecture-as-spec):
@@ -93,8 +98,21 @@ wavelen[j]  = 2π / inv_freq[j]
   low, high = max(low, 0), min(high, d − 1)                        # truncate=True (default)
   ```
 
-  (YaRN also defines an `attention_factor` that scales the cos/sin; for `rope_type="llama3"`
-  — what Llama-3.1 uses — that factor is `1`, so the model forward needs only `inv_freq`.)
+### `rope_attention_scale`
+
+YaRN (and longrope) rescale not only the frequencies but also the **attention logits**,
+multiplying the cos/sin — and therefore the rotated q & k — by a scalar. Every other
+schedule leaves it at `1.0`:
+
+```
+default / linear / dynamic / llama3:   scale = 1.0
+yarn (no explicit attention_factor):   scale = 0.1 · ln(factor) + 1   if factor > 1, else 1.0
+yarn (explicit attention_factor):      scale = attention_factor
+```
+
+Llama-3.1 uses `llama3`, so its scale is `1.0` and `llama31_forward` multiplies by a
+no-op — but GPT-OSS (309) reuses this operator for its real YaRN schedule, where the
+scale is ≈ `1.35`.
 
 ### `rope_from_freqs`
 
@@ -111,12 +129,13 @@ rotate_half(x) = concat([-x[..., d/2:], x[..., :d/2]], axis=-1)
 
 ```
 inv_freq = rope_scaled_freqs(head_dim, rope_base, cfg.rope_scaling)   # once
+af       = rope_attention_scale(cfg.rope_scaling)                     # 1.0 for llama3
 h = embedding(input_ids, tok_embed)
 
 for layer in layers:
     a = rms_norm(h, input_layernorm)
-    q = (a @ q_proj.T) → (B, H,   L, head_dim) ; rope_from_freqs(q, positions, inv_freq)
-    k = (a @ k_proj.T) → (B, KVH, L, head_dim) ; rope_from_freqs(k, positions, inv_freq)
+    q = (a @ q_proj.T) → (B, H,   L, head_dim) ; rope_from_freqs(q, positions, inv_freq) * af
+    k = (a @ k_proj.T) → (B, KVH, L, head_dim) ; rope_from_freqs(k, positions, inv_freq) * af
     v = (a @ v_proj.T) → (B, KVH, L, head_dim)
     k, v   = repeat_kv(k, v, H // KVH)                       # GQA
     a = sdpa(q, k, v, triangular_mask(L)) → merge heads → @ o_proj.T
@@ -173,6 +192,10 @@ def rope_from_freqs(
     inv_freq: np.ndarray,          # (head_dim / 2,)
 ) -> np.ndarray:                   # same shape as x
 
+def rope_attention_scale(
+    scaling: dict | None = None,   # rope_scaling config; None → 1.0
+) -> float:                        # attention temperature (1.0 except yarn)
+
 def load_llama31(weights: dict, cfg: Llama31Config) -> Llama31Params: ...
 
 def llama31_forward(
@@ -224,6 +247,10 @@ The test suite checks:
 - `test_rope_from_freqs_equals_rope_half_on_default` /
   `test_rope_from_freqs_zero_position_is_identity`: the apply step matches 213's
   `rope_half` and is the identity at position 0.
+- `test_rope_attention_scale_is_one_for_non_yarn` /
+  `test_rope_attention_scale_yarn_mscale` / `test_rope_attention_scale_yarn_explicit_factor`:
+  the attention temperature is `1.0` except for YaRN, where it is the `mscale`
+  (or an explicit `attention_factor`).
 - `test_llama31_logits_match_oracle`: whole-model logit parity vs the committed float64
   oracle at `rtol=1e-9`.
 - `test_llama31_logits_shape` / `test_llama31_causal`: output shape and causal masking.

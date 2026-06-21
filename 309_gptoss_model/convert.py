@@ -11,14 +11,12 @@ Outputs (next to this file):
   gptoss_tiny.npz                     full weights (git-ignored)
   tests/fixtures/real_ref.npz         committed reference logits + cfg
 
-Two forced settings (analogous to 308 forcing SiLU):
-  * ``attn_implementation='eager'`` — the explicit-softmax-with-sink path our float64
-    forward mirrors (GPT-OSS has no SDPA path; flash needs the sink kernel).
-  * ``rope_type='default'`` — the checkpoint declares YaRN long-context scaling, which
-    is deferred to 307 / L4.  Our forward uses default rotate-half RoPE, so we force the
-    genuine model to the same RoPE for an apples-to-apples cross-check.  The weights are
-    random (no demo); this layer exists only as the grade-time genuine-HF anchor + loader
-    coverage (Tier B, see README).
+RoPE is the checkpoint's native **YaRN** long-context schedule (reused from 307 via
+``rope_scaled_freqs`` + ``rope_attention_scale``) — nothing is forced beyond
+``attn_implementation='eager'`` (the explicit-softmax-with-sink path our float64
+forward mirrors; GPT-OSS has no SDPA path and flash needs the sink kernel).  The
+weights are random (no demo); this layer is the grade-time genuine-HF anchor + loader
+coverage (Tier B, see README).
 """
 
 from __future__ import annotations
@@ -87,22 +85,22 @@ def main() -> None:
     np.savez(HERE / "gptoss_tiny.npz", **W)
     print(f"Wrote gptoss_tiny.npz ({len(W)} arrays)")
 
-    # Genuine HF logits — eager attention + default RoPE (see module docstring).
+    # Genuine HF logits — eager attention + the checkpoint's native YaRN RoPE.
     from transformers import AutoConfig, GptOssForCausalLM
     from leet_llm import GptOssConfig, gptoss_forward, load_gptoss
 
-    rope_params = cfg.get("rope_parameters") or {}
+    rope_params = cfg.get("rope_parameters") or cfg.get("rope_scaling") or {}
     rope_base = float(rope_params.get("rope_theta", cfg.get("rope_theta", 150000.0)))
+    rope_scaling = {k: v for k, v in rope_params.items() if k != "rope_theta"} or None
 
     hf_config = AutoConfig.from_pretrained(NAME)
     hf_config.attn_implementation = "eager"
-    hf_config.rope_parameters = {"rope_type": "default", "rope_theta": rope_base}
     hf = GptOssForCausalLM.from_pretrained(
         NAME, config=hf_config, torch_dtype=torch.float32, attn_implementation="eager"
     ).eval()
     with torch.no_grad():
         hf_logits = hf(torch.tensor(INPUT_IDS, dtype=torch.long)).logits.float().numpy()
-    print(f"[hf] genuine GptOssForCausalLM (eager, default-rope, float32) logits: {hf_logits.shape}")
+    print(f"[hf] genuine GptOssForCausalLM (eager, yarn-rope, float32) logits: {hf_logits.shape}")
 
     gcfg = GptOssConfig(
         dim=d,
@@ -118,6 +116,7 @@ def main() -> None:
         norm_eps=cfg.get("rms_norm_eps", 1e-5),
         rope_base=rope_base,
         max_seq_len=cfg.get("max_position_embeddings", 4096),
+        rope_scaling=rope_scaling,
     )
     params = load_gptoss(W, gcfg)
     out_logits = gptoss_forward(INPUT_IDS, params, gcfg)
@@ -150,6 +149,7 @@ def main() -> None:
         norm_eps=np.array(gcfg.norm_eps),
         rope_base=np.array(gcfg.rope_base),
         max_seq_len=np.array(gcfg.max_seq_len),
+        rope_scaling=np.array(json.dumps(gcfg.rope_scaling)),
     )
     print("Wrote tests/fixtures/real_ref.npz")
 

@@ -33,8 +33,11 @@ Two new operators plus the whole-model assembly:
   layers use full causal.
 - **GPT-OSS MoE** — top-k routing with a **biased** router, a softmax taken over the
   **selected** logits, interleaved gate/up, and a clamped GLU activation (below).
-- **RoPE** — default rotate-half (`rope_half`). The real checkpoint declares a YaRN
-  long-context schedule; that scaling is deferred (see → 307 / L4 below).
+- **RoPE** — GPT-OSS's real schedule is **YaRN** long-context scaling, reused from 307:
+  `inv_freq = rope_scaled_freqs(head_dim, rope_base, cfg.rope_scaling)` and the attention
+  temperature `af = rope_attention_scale(cfg.rope_scaling)`, applied as
+  `rope_from_freqs(.., inv_freq) * af` (rotate-half). `cfg.rope_scaling=None` → plain
+  rotate-half RoPE.
 
 ### GPT-OSS MoE vs Mixtral `moe_ffn` (308)
 
@@ -101,12 +104,14 @@ moe(x_t) = Σ_j  scores[t, j] · out_{idx[t,j]}
 ### Whole-model `gptoss_forward`
 
 ```
+inv_freq = rope_scaled_freqs(head_dim, rope_base, cfg.rope_scaling)   # YaRN (307)
+af       = rope_attention_scale(cfg.rope_scaling)                     # ≈1.35 for YaRN
 h = embedding(input_ids, tok_embed)
 
 for i, layer in enumerate(layers):
     a = rms_norm(h, input_layernorm)
-    q = (a @ q_proj.T + q_bias) → (B, H,   L, head_dim) ; rope_half(q, positions)
-    k = (a @ k_proj.T + k_bias) → (B, KVH, L, head_dim) ; rope_half(k, positions)
+    q = (a @ q_proj.T + q_bias) → (B, H,   L, head_dim) ; rope_from_freqs(q, positions, inv_freq) * af
+    k = (a @ k_proj.T + k_bias) → (B, KVH, L, head_dim) ; rope_from_freqs(k, positions, inv_freq) * af
     v = (a @ v_proj.T + v_bias) → (B, KVH, L, head_dim)
     k, v   = repeat_kv(k, v, H // KVH)                       # GQA
     scores = (q @ k.T) * (head_dim ** -0.5)
@@ -200,17 +205,17 @@ def gptoss_forward(
 - Attention-sink intuition (StreamingLLM): <https://arxiv.org/abs/2309.17453>
 - `303_llama_model/` — the Llama baseline this re-skins
 - `305_sliding_window_attention/` — the band mask reused for the even (sliding) layers
+- `307_llama31_model/` — `rope_scaled_freqs` / `rope_attention_scale` (YaRN) reused here
 - `308_mixtral_model/` — Mixtral's MoE, contrasted in the table above
 - Task 213 (`rope_half`), 005 (`softmax`), 007 (`top_k`)
 
 **Real-weights layer (B):** `download.sh` fetches
 `hf-internal-testing/tiny-random-GptOssForCausalLM` (config + safetensors only),
 maps the HF names → `GptOssParams`, and commits `tests/fixtures/real_ref.npz` from a
-genuine `GptOssForCausalLM`. The checkpoint's weights are random (no demo) — it
-exists only as the grade-time genuine-HF cross-check + loader coverage (Tier B).
-Two settings are forced to match our forward: **eager attention** (the explicit
-softmax-with-sink path) and **default RoPE** (the checkpoint declares YaRN
-long-context scaling, deferred to 307 / L4).
+genuine `GptOssForCausalLM` with its **native YaRN** RoPE active. The checkpoint's
+weights are random (no demo) — it exists only as the grade-time genuine-HF cross-check
++ loader coverage (Tier B). The only forced setting is **eager attention** (the
+explicit softmax-with-sink path our forward mirrors).
 
 > **→ 307 / L4:** GPT-OSS's real RoPE is YaRN long-context scaling. The `inv_freq`
 > rescaling lives in 307 (Llama-3.1 long-context RoPE); long-context decode is an
@@ -241,5 +246,6 @@ The test suite checks:
   oracle at `rtol=1e-9`.
 - `test_gptoss_logits_shape` / `test_gptoss_causal`: output shape and causal masking.
 - `test_gptoss_alternating_sliding_full_masks`: even layers consult the sliding window.
+- `test_gptoss_yarn_rope_is_wired`: the YaRN schedule is applied (yarn ≠ default RoPE).
 - `test_gptoss_real_weights_logits` *(skipped until `download.sh` runs)*: parity vs a
   genuine `GptOssForCausalLM` on real weights.
