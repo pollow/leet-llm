@@ -144,7 +144,13 @@ def test_geglu_uses_gelu_not_silu():
 # ---------------------------------------------------------------------------
 
 def test_gemma_logits_match_oracle():
-    """gemma_forward must reproduce the composed float64 oracle logits at rtol=1e-9."""
+    """gemma_forward must reproduce the composed float64 oracle logits at rtol=1e-9.
+
+    This is the exact check for every wrinkle that cannot be isolated independently —
+    in particular the constant ``* sqrt(dim)`` embedding scale and the
+    ``query_pre_attn_scalar ** -0.5`` attention scale: the oracle bakes both in, so any
+    omitted or mis-sized constant fails here at rtol=1e-9.
+    """
     out = gemma_forward(_TINY["input_ids"], _tiny_params(), _tiny_cfg())
     np.testing.assert_allclose(out, _TINY["logits"], rtol=1e-9, atol=1e-9)
 
@@ -166,11 +172,27 @@ def test_gemma_causal():
 
 
 def test_gemma_final_logits_softcapped():
-    """Final logits must be bounded by ±final_logit_softcapping."""
+    """The final logit soft-cap must actually compress the output.
+
+    A bare "logits are within ±cap" bound is necessary but not sufficient — on this
+    fixture the *uncapped* logits already sit below the default cap (≈27 < 30), so a
+    forward that simply forgot the final cap would pass a bound check. We instead set a
+    *tiny* cap (0.5) that the raw logits (~27) cannot satisfy unless the cap is applied,
+    AND require the tiny cap to change the output versus an effectively-disabled cap.
+    Both conditions hold only if ``softcap(logits, final_logit_softcapping)`` is run.
+    """
     cfg = _tiny_cfg()
-    out = gemma_forward(_TINY["input_ids"], _tiny_params(), cfg)
-    assert np.all(np.abs(out) < cfg.final_logit_softcapping + 1e-6), (
-        "final logits exceed the soft-cap — final_logit_softcapping not applied"
+    small_cap = GemmaConfig(**{**cfg.__dict__, "final_logit_softcapping": 0.5})
+    huge_cap = GemmaConfig(**{**cfg.__dict__, "final_logit_softcapping": 1e9})
+
+    out_small = gemma_forward(_TINY["input_ids"], _tiny_params(), small_cap)
+    out_huge = gemma_forward(_TINY["input_ids"], _tiny_params(), huge_cap)
+
+    assert np.max(np.abs(out_small)) <= 0.5 + 1e-6, (
+        "logits exceed a tiny final soft-cap — final_logit_softcapping not applied"
+    )
+    assert not np.allclose(out_small, out_huge, atol=1e-3), (
+        "tiny vs disabled final cap produced identical logits — cap has no effect"
     )
 
 
@@ -199,27 +221,15 @@ def test_one_plus_w_rmsnorm():
     )
 
 
-def test_sqrt_d_embedding_scale():
-    """The embedding is scaled by ``sqrt(dim)`` before the first block.
-
-    RMSNorm is scale-invariant, so the embed scale only survives via the residual
-    stream's relative weighting against the sublayers. We verify the forward is
-    sensitive to that scale: comparing the real forward to one whose embedding rows
-    were pre-divided by ``sqrt(dim)`` (which would cancel the scale if and only if
-    the ``*sqrt(dim)`` multiply is present) must change the logits.
-    """
-    cfg = _tiny_cfg()
-    base = gemma_forward(_TINY["input_ids"], _tiny_params(), cfg)
-
-    W = _weights()
-    W["model.embed_tokens.weight"] = W["model.embed_tokens.weight"] / np.sqrt(float(cfg.dim))
-    scaled = gemma_forward(_TINY["input_ids"], load_gemma(W, cfg), cfg)
-
-    assert not np.allclose(base, scaled, atol=1e-6), (
-        "Dividing embeddings by sqrt(dim) did not change the output — the residual "
-        "stream is insensitive to the embedding magnitude, which means the sqrt(dim) "
-        "scale (or the residual path) is not implemented as in Gemma-2."
-    )
+# NOTE on the √d embedding scale: there is deliberately no standalone isolation test
+# for it. The constant `* sqrt(dim)` scale cannot be probed independently through the
+# public forward — both RMSNorms that bracket the residual stream (and especially the
+# final norm before lm_head) are scale-invariant, so no simple input construction can
+# expose the constant alone. It IS verified *exactly* by `test_gemma_logits_match_oracle`:
+# the committed float64 oracle applies `h = h * sqrt(dim)`, so omitting or mis-sizing the
+# scale fails whole-model parity at rtol=1e-9. A weaker "does the output change when I
+# edit the embedding" probe would pass any model and give false confidence, so it is
+# intentionally omitted here.
 
 
 def test_alternating_sliding_full_masks():
@@ -232,7 +242,6 @@ def test_alternating_sliding_full_masks():
     """
     cfg = _tiny_cfg()
     L = int(_TINY["input_ids"].shape[1])
-    assert cfg.sliding_window < L or True  # window may be >= L in fixture; force small below
 
     big_win = GemmaConfig(**{**cfg.__dict__, "sliding_window": L})        # window covers all
     small_win = GemmaConfig(**{**cfg.__dict__, "sliding_window": 2})      # window drops far past

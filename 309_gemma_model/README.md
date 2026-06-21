@@ -42,6 +42,11 @@ Two new operators plus the whole-model assembly:
 Reuse: `embedding` (201), `rope_half` (213), `sliding_window_mask` (305),
 `softmax` (005).
 
+> **→ L4:** this task implements the forward-pass arithmetic only. The
+> **sliding-window KV-cache eviction** for the SWA layers (incrementally dropping
+> keys that fall outside each sliding layer's window during decode) is an
+> inference-systems concern, deferred to Level 4.
+
 ---
 
 ## The Math
