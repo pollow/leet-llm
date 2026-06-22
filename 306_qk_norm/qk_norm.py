@@ -133,3 +133,20 @@ def qwen3_forward(
       ``swiglu_ffn`` → residual] → final ``rms_norm`` → ``@ lm_head.T``.
     """
     raise NotImplementedError("Implement qwen3_forward — see 306_qk_norm/README.md")
+
+
+if __name__ == "__main__":
+    from utils import run_qwen3_cli
+
+    try:
+        run_qwen3_cli(
+            module_name="306_qk_norm/qk_norm.py",
+            load_fn=load_qwen3,
+            forward_fn=qwen3_forward,
+            config_cls=Qwen3Config,
+        )
+    except NotImplementedError as exc:
+        raise SystemExit(
+            "This is the student stub; implement qk_norm/load_qwen3/qwen3_forward "
+            "or run solution.py instead."
+        ) from exc

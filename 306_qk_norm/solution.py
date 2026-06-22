@@ -24,10 +24,13 @@ Hints:
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from random import triangular
 
 import numpy as np
+
+os.environ.setdefault("LEET_LLM_TARGET", "solution")
 
 from leet_llm import AttnParams, LlamaBlockParams, SwiGLUParams, add_residual, affine, embedding, group_last_axis, rms_norm, rope_half, sdpa, swiglu_ffn, triangular_mask, ungroup_last_axis, sample
 
@@ -264,19 +267,12 @@ def qwen3_forward(
     return logits
 
 
-def generate(input_ids: np.ndarray, params, cfg, *, max_new_tokens: int = 256,
-             rng: np.random.Generator | None = None, temperature: float = 1.0,
-             top_k: int = 0, top_p: float = 1.0, eos_id: int | None = None) -> list[int]:
-    """Stateless autoregressive decode: each step recomputes the full prefix via
-    ``llama_forward`` (no KV-cache — that is L4), samples the last-position logits,
-    appends, and stops at ``eos_id``. Returns the full id list (prompt + generated)."""
-    ids = input_ids[0].tolist()  # (1, S) -> list[int]; batch size 1 by design
-    for _ in range(max_new_tokens):
-        logits = qwen3_forward(np.array([ids]), params, cfg)  # (1, t, V)
-        idx = int(sample(logits[0, -1], rng, temperature=temperature,
-                         top_k=top_k, top_p=top_p))
-        ids.append(idx)
-        if idx == eos_id:
-            break
+if __name__ == "__main__":
+    from utils import run_qwen3_cli
 
-    return ids
+    run_qwen3_cli(
+        module_name="306_qk_norm/solution.py",
+        load_fn=load_qwen3,
+        forward_fn=qwen3_forward,
+        config_cls=Qwen3Config,
+    )
