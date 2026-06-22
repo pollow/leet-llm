@@ -122,10 +122,10 @@ runs on *your own* code. Work the levels in order; each builds on the last.
 
 | Level | Tasks | Status |
 |-------|-------|--------|
-| L0 — NumPy Foundations | 10 | ✅ scaffolded (0 / 10 solved) |
-| L1 — Tokenization & Batching | 13 | ✅ scaffolded (0 / 13 solved) |
-| L2 — Operators & Layers | — | ⬜ planned |
-| L3 — Whole-Model & Inference | — | ✅ scaffolded (Track A: 301–302, Track B: 303–304) |
+| L0 — NumPy Foundations | 11 | ✅ scaffolded |
+| L1 — Tokenization & Batching | 13 | ✅ scaffolded |
+| L2 — Operators & Layers | 16 | ✅ scaffolded |
+| L3 — Whole-Model & Inference | 11 | ✅ scaffolded |
 | L4 — Inference Systems & Serving | — | ⬜ planned |
 | L5 — PyTorch & LoRA Fine-Tuning | — | ⬜ planned |
 | L6 — RL Infrastructure | — | ⬜ planned |

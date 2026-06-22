@@ -26,8 +26,8 @@ two = task within the level (`213` = L2 task 13).
 tasks (LayerNorm→RMSNorm, sinusoidal→RoPE, MHA→GQA, GELU-MLP→SwiGLU) so students learn
 both *what* modern models do and *why* they changed.
 
-Current status: L0–L3 scaffolded; 301–304 (the two L3 capstone tracks: opus-mt translate
-and stories15M Llama) have reference solutions. L4–L6 not yet authored.
+Current status: L0–L3 scaffolded (including the full L3 301–311 track); L4–L6 not yet
+authored.
 
 ## Design principles
 
