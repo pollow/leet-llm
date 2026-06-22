@@ -43,7 +43,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from leet_llm import split_halves
+from leet_llm import LlamaConfig, LlamaParams, load_llama, split_halves
 
 
 def rope_scaled_freqs(
@@ -190,52 +190,22 @@ class Llama31Config:
     rope_scaling: dict | None = None
 
 
-@dataclass(frozen=True)
-class Llama31Params:
-    """Packed weights for a Llama-3.1 model.
-
-    Attributes
-    ----------
-    tok_embed:
-        Token embedding table, shape ``(V, d)``.
-    layers:
-        List of per-layer dicts (see ``load_llama31`` for key names).
-    final_norm:
-        Final RMSNorm weight, shape ``(d,)``.
-    lm_head:
-        Output projection, shape ``(V, d)``.
-    """
-
-    tok_embed: np.ndarray   # (V, d)
-    layers: list            # list of per-layer dicts
-    final_norm: np.ndarray  # (d,)
-    lm_head: np.ndarray     # (V, d)
+Llama31Params = LlamaParams
 
 
 def load_llama31(weights: dict, cfg: Llama31Config) -> Llama31Params:
-    """Map HF-named weight arrays into ``Llama31Params``.
-
-    Llama-3.1 uses rotate-half RoPE, so weights map **as-is** (no un-permute).
-    The attention projections are **bias-free** (like Llama, unlike GPT-OSS)::
-
-        model.embed_tokens.weight                            (V, d)
-        model.norm.weight                                    (d,)
-        lm_head.weight                                       (V, d)  [absent → tie to embed]
-
-    Per layer ``model.layers.{i}``::
-
-        .input_layernorm.weight                  (d,)
-        .post_attention_layernorm.weight         (d,)
-        .self_attn.q_proj.weight                 (n_heads    * head_dim, d)
-        .self_attn.k_proj.weight                 (n_kv_heads * head_dim, d)
-        .self_attn.v_proj.weight                 (n_kv_heads * head_dim, d)
-        .self_attn.o_proj.weight                 (d, n_heads * head_dim)
-        .mlp.gate_proj.weight                    (intermediate, d)
-        .mlp.up_proj.weight                      (intermediate, d)
-        .mlp.down_proj.weight                    (d, intermediate)
-    """
-    raise NotImplementedError(
-        "Implement load_llama31 — see 307_llama31_model/README.md")
+    """Reuse 303's Llama weight mapping; 307 changes only RoPE frequencies."""
+    cfg303 = LlamaConfig(
+        dim=cfg.dim,
+        n_layers=cfg.n_layers,
+        n_heads=cfg.n_heads,
+        n_kv_heads=cfg.n_kv_heads,
+        vocab_size=cfg.vocab_size,
+        max_seq_len=cfg.max_seq_len,
+        norm_eps=cfg.norm_eps,
+        rope_base=cfg.rope_base,
+    )
+    return load_llama(weights, cfg303)
 
 
 def llama31_forward(
