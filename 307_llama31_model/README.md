@@ -6,8 +6,9 @@ Llama-3.1 is the baseline Llama (303) with exactly one localized delta: the RoPE
 **inverse frequencies are rescaled** so the same pretrained weights generalise from
 the 8K pretraining window out to 128K tokens. The attention math, GQA, SwiGLU,
 RMSNorm and rotate-half RoPE are all unchanged — only the *frequencies* that go into
-the rotation are bent. You implement the frequency schedule and the apply step, then
-assemble a runnable `llama31_forward → logits`.
+the rotation are bent. In this task you implement that schedule and apply step, then
+start from a **direct call to 303's `llama_forward`** so the default behavior is visible
+before refactoring toward RoPE-strategy injection.
 
 Two new operators plus the whole-model assembly:
 
@@ -20,7 +21,7 @@ Two new operators plus the whole-model assembly:
    difference is that the (rescaled) frequencies are supplied rather than derived from
    `base`.
 3. **`Llama31Config` / `Llama31Params` / `load_llama31` / `llama31_forward`** — the
-   Llama-3.1 decoder-only model.
+   Llama-3.1 decoder-only model, initially wired by reusing 303's forward.
 
 **GIVEN — the Llama-3.1 wrinkle** (architecture-as-spec):
 
@@ -76,28 +77,13 @@ rotate_half(x) = concat([-x[..., d/2:], x[..., :d/2]], axis=-1)
 ### Whole-model `llama31_forward`
 
 ```
-inv_freq = rope_scaled_freqs(head_dim, rope_base, cfg.rope_scaling)   # once
-h = embedding(input_ids, tok_embed)
-
-for layer in layers:
-    a = rms_norm(h, input_layernorm)
-    q = (a @ q_proj.T) → (B, H,   L, head_dim) ; rope_from_freqs(q, positions, inv_freq)
-    k = (a @ k_proj.T) → (B, KVH, L, head_dim) ; rope_from_freqs(k, positions, inv_freq)
-    v = (a @ v_proj.T) → (B, KVH, L, head_dim)
-    k, v   = repeat_kv(k, v, H // KVH)                       # GQA
-    a = sdpa(q, k, v, triangular_mask(L)) → merge heads → @ o_proj.T
-    h = h + a                                                # residual 1
-
-    f = rms_norm(h, post_attention_layernorm)
-    f = swiglu_ffn(f, {gate, up, down})
-    h = h + f                                                # residual 2
-
-h = rms_norm(h, final_norm)
-logits = h @ lm_head.T
+# baseline wiring (intentional): directly reuse 303 forward first
+logits = llama_forward(input_ids, params303, cfg303, start_pos)
 ```
 
-**Note:** the attention math composes from granular primitives (rotate-half RoPE,
-`sdpa`), *not* from `llama_decoder_block` (216, which is interleaved-RoPE only).
+This baseline keeps 303's default RoPE behavior, so the scaling-sensitive 307 check will
+still fail. The task requirement is to refactor the reused block/forward path so RoPE is
+injectable and 307 can plug in the scaled rotate-half strategy.
 
 ---
 

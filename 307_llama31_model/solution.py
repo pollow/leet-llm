@@ -14,7 +14,7 @@ Two delta operators plus the full Llama-3.1 decoder assembly:
    a **precomputed** ``inv_freq`` (213's ``rope_half`` derives the frequencies
    from ``base`` internally; here the scaled frequencies are passed in).
 3. ``Llama31Config`` / ``Llama31Params`` / ``load_llama31`` / ``llama31_forward``
-   — the Llama-3.1 decoder-only model composing L2 primitives.
+   — the Llama-3.1 decoder-only model wired through 303's forward.
 
 See README.md. Run ``uv run grade 307`` to check your work.
 
@@ -28,22 +28,17 @@ Hints:
   (``concat([angle, angle], -1)``), and return ``x*cos + rotate_half(x)*sin``
   where ``rotate_half(x) = concat([-x2, x1], -1)``.  Identical to 213's
   ``rope_half`` except the frequencies are supplied, not derived from ``base``.
-- ``llama31_forward``: compose ``embedding`` (201) → per layer [``rms_norm`` (212)
-  → q/k/v ``affine`` (003, NO bias) + ``group_last_axis`` (001) → ``rope_from_freqs``
-  on q & k with the scaled ``inv_freq`` → repeat-kv
-  → ``sdpa`` (205) with a ``triangular_mask`` (009) → ``ungroup_last_axis`` (001) +
-  o_proj → ``add_residual`` (208) → ``rms_norm`` → ``swiglu_ffn`` (214) → residual] →
-  final ``rms_norm`` → ``@ lm_head.T``.  Use rotate-half RoPE, NOT
-  ``llama_decoder_block`` (216, interleaved-only).  Compute ``inv_freq`` once.
+- ``llama31_forward``: call ``llama_forward`` (303) directly first so you can observe
+  the default behavior; then refactor the reused path to inject the 307 RoPE schedule.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, fields, is_dataclass
 
 import numpy as np
 
-from leet_llm import LlamaConfig, LlamaParams, load_llama, split_halves
+from leet_llm import LlamaConfig, LlamaParams, llama_forward, load_llama, split_halves
 
 
 def rope_scaled_freqs(
@@ -193,6 +188,23 @@ class Llama31Config:
 Llama31Params = LlamaParams
 
 
+def _cast_float_arrays_to_float64(obj):
+    """Recursively cast floating NumPy arrays inside nested dataclasses/lists."""
+    if isinstance(obj, np.ndarray):
+        if np.issubdtype(obj.dtype, np.floating):
+            return obj.astype(np.float64, copy=False)
+        return obj
+    if isinstance(obj, list):
+        return [_cast_float_arrays_to_float64(v) for v in obj]
+    if is_dataclass(obj):
+        values = {
+            f.name: _cast_float_arrays_to_float64(getattr(obj, f.name))
+            for f in fields(obj)
+        }
+        return type(obj)(**values)
+    return obj
+
+
 def load_llama31(weights: dict, cfg: Llama31Config) -> Llama31Params:
     """Reuse 303's Llama weight mapping; 307 changes only RoPE frequencies."""
     cfg303 = LlamaConfig(
@@ -205,7 +217,8 @@ def load_llama31(weights: dict, cfg: Llama31Config) -> Llama31Params:
         norm_eps=cfg.norm_eps,
         rope_base=cfg.rope_base,
     )
-    return load_llama(weights, cfg303)
+    params = load_llama(weights, cfg303)
+    return _cast_float_arrays_to_float64(params)
 
 
 def llama31_forward(
@@ -214,22 +227,21 @@ def llama31_forward(
     cfg: Llama31Config,
     start_pos: int = 0,
 ) -> np.ndarray:
-    """Token embed → N Llama blocks → final RMSNorm → lm_head logits.
+    """Call 303's forward directly as the baseline.
 
+    This intentionally shows the default 303 RoPE path first. The 307 task then asks for
+    refactoring the reused block/forward path so scaled rotate-half RoPE can be injected.
     Returns logits of shape ``(B, L, V)``.
-
-    Llama-3.1 = 303's Llama with the RoPE frequencies rescaled by
-    ``rope_scaled_freqs(head_dim, rope_base, cfg.rope_scaling)`` (computed once).
-    Compose from granular L2 primitives (NOT ``llama_decoder_block``):
-
-      ``embedding`` → per layer [``rms_norm`` → q/k/v ``affine`` (no bias) +
-      head-split → ``rope_from_freqs`` on q & k →
-      repeat-kv → ``sdpa`` with a causal ``triangular_mask`` → merge + o_proj →
-      ``add_residual`` → ``rms_norm`` → ``swiglu_ffn`` → residual] → final
-      ``rms_norm`` → ``@ lm_head.T``.
-
-    RoPE is rotate-half (``rope_from_freqs``). Long-context decode (the KV-cache side
-    of the scaled schedule) is deferred to L4.
     """
-    raise NotImplementedError(
-        "Implement llama31_forward — see 307_llama31_model/README.md")
+    cfg303 = LlamaConfig(
+        dim=cfg.dim,
+        n_layers=cfg.n_layers,
+        n_heads=cfg.n_heads,
+        n_kv_heads=cfg.n_kv_heads,
+        vocab_size=cfg.vocab_size,
+        max_seq_len=cfg.max_seq_len,
+        norm_eps=cfg.norm_eps,
+        rope_base=cfg.rope_base,
+    )
+    # TODO(307): inject scaled rotate-half RoPE for llama3 parity.
+    return llama_forward(input_ids, params, cfg303, start_pos=start_pos)
