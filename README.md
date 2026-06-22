@@ -129,11 +129,3 @@ runs on *your own* code. Work the levels in order; each builds on the last.
 | L4 — Inference Systems & Serving | — | ⬜ planned |
 | L5 — PyTorch & LoRA Fine-Tuning | — | ⬜ planned |
 | L6 — RL Infrastructure | — | ⬜ planned |
-
----
-
-## Design
-
-The full curriculum design lives in
-[`docs/superpowers/specs/2026-05-31-leet-llm-curriculum-design.md`](docs/superpowers/specs/2026-05-31-leet-llm-curriculum-design.md),
-including the complete Level 0 task specification.
