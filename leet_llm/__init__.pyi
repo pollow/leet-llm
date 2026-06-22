@@ -78,6 +78,8 @@ SwiGLUParams: Any
 gqa: Any
 llama_decoder_block: Any
 LlamaBlockParams: Any
+sample: Any
+generate: Any
 
 def __getattr__(name: str) -> Any: ...
 def __dir__() -> list[str]: ...

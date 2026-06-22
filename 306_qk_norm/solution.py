@@ -25,8 +25,11 @@ Hints:
 from __future__ import annotations
 
 from dataclasses import dataclass
+from random import triangular
 
 import numpy as np
+
+from leet_llm import AttnParams, LlamaBlockParams, SwiGLUParams, add_residual, affine, embedding, group_last_axis, rms_norm, rope_half, sdpa, swiglu_ffn, triangular_mask, ungroup_last_axis, sample
 
 
 def qk_norm(
@@ -50,11 +53,9 @@ def qk_norm(
     k:
         Key tensor, shape ``(..., n_kv_heads, L, head_dim)``.
     q_weight:
-        Per-head Q scale, shape ``(head_dim,)``.  Qwen3 HF weight name:
-        ``self_attn.q_norm.weight``.
+        Per-head Q scale, shape ``(head_dim,)``.
     k_weight:
-        Per-head K scale, shape ``(head_dim,)``.  Qwen3 HF weight name:
-        ``self_attn.k_norm.weight``.
+        Per-head K scale, shape ``(head_dim,)``.
     eps:
         Small constant for numerical stability (Qwen3 default: ``1e-6``).
 
@@ -63,7 +64,10 @@ def qk_norm(
     tuple[np.ndarray, np.ndarray]
         ``(q_normed, k_normed)`` with the same shapes as the inputs.
     """
-    raise NotImplementedError("Implement qk_norm — see 306_qk_norm/README.md")
+    return (
+        rms_norm(q, q_weight, eps),
+        rms_norm(k, k_weight, eps),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -85,12 +89,29 @@ class Qwen3Config:
     rope_base: float = 10000.0
 
 
+@dataclass(frozen=True, kw_only=True)
+class Qwen3AttnParams(AttnParams):
+    """Traditional AttnParams with qk_norm weights."""
+    q_norm: np.ndarray
+    k_norm: np.ndarray
+
+
+@dataclass(frozen=True)
+class Qwen3BlockParams:
+    """Weights for one Llama decoder block: RoPE-GQA + SwiGLU, two RMSNorms, bias-free."""
+    attn: Qwen3AttnParams
+    ffn: SwiGLUParams
+    attn_norm: np.ndarray  # RMSNorm weight (d,)
+    ffn_norm: np.ndarray  # RMSNorm weight (d,)
+
+
 @dataclass(frozen=True)
 class Qwen3Params:
-    tok_embed: np.ndarray   # (V, d)
-    layers: list            # list of per-layer dicts (see load_qwen3)
-    final_norm: np.ndarray  # (d,) RMSNorm weight
-    lm_head: np.ndarray     # (V, d)  [tied: same as tok_embed when tie_word_embeddings=True]
+    tok_embed: np.ndarray           # (V, d)
+    layers: list[Qwen3BlockParams]  # list of per-layer dicts (see load_qwen3)
+    final_norm: np.ndarray          # (d,) RMSNorm weight
+    # (V, d)  [tied: same as tok_embed when tie_word_embeddings=True]
+    lm_head: np.ndarray
 
 
 def load_qwen3(weights: dict, cfg: Qwen3Config) -> Qwen3Params:
@@ -112,7 +133,103 @@ def load_qwen3(weights: dict, cfg: Qwen3Config) -> Qwen3Params:
       model.layers.{i}.mlp.up_proj.weight                  (ffn_dim, d)
       model.layers.{i}.mlp.down_proj.weight                (d, ffn_dim)
     """
-    raise NotImplementedError("Implement load_qwen3 — see 306_qk_norm/README.md")
+    tok_embed = weights["model.embed_tokens.weight"]
+    final_norm = weights["model.norm.weight"]
+    lm_head = weights["lm_head.weight"]
+
+    layers: list[Qwen3BlockParams] = []
+    for i in range(cfg.n_layers):
+        prefix = f"model.layers.{i}"
+        attn_norm = weights[f"{prefix}.input_layernorm.weight"]
+        ffn_norm = weights[f"{prefix}.post_attention_layernorm.weight"]
+
+        Wq = weights[f"{prefix}.self_attn.q_proj.weight"]
+        Wk = weights[f"{prefix}.self_attn.k_proj.weight"]
+        Wv = weights[f"{prefix}.self_attn.v_proj.weight"]
+        Wo = weights[f"{prefix}.self_attn.o_proj.weight"]
+        q_norm = weights[f"{prefix}.self_attn.q_norm.weight"]
+        k_norm = weights[f"{prefix}.self_attn.k_norm.weight"]
+        attn = Qwen3AttnParams(
+            Wq=Wq, Wk=Wk, Wv=Wv, Wo=Wo, bq=None, bk=None, bv=None, bo=None, q_norm=q_norm, k_norm=k_norm
+        )
+
+        W1 = weights[f"{prefix}.mlp.gate_proj.weight"]  # gate
+        W3 = weights[f"{prefix}.mlp.up_proj.weight"]  # up
+        W2 = weights[f"{prefix}.mlp.down_proj.weight"]  # down
+        ffn = SwiGLUParams(W1=W1, W3=W3, W2=W2)
+
+        layers.append(
+            LlamaBlockParams(attn=attn, ffn=ffn,
+                             attn_norm=attn_norm, ffn_norm=ffn_norm)
+        )
+
+    return Qwen3Params(
+        tok_embed=tok_embed, layers=layers, final_norm=final_norm, lm_head=lm_head
+    )
+
+
+def _rope_gqa_qk_norm(
+    x: np.ndarray,
+    params: Qwen3AttnParams,
+    n_heads: int,
+    n_kv_heads: int,
+    positions: np.ndarray,
+    mask: np.ndarray | None = None,
+    eps: float = 1e-6,
+    rope_base: float = 10000.0,
+):
+    """Grouped-query attention with rotate-half rope and QK-Norm"""
+    n_g = n_heads // n_kv_heads  # group_size
+
+    Q = affine(x, params.Wq, params.bq)
+    K = affine(x, params.Wk, params.bk)
+    V = affine(x, params.Wv, params.bv)
+
+    Q = group_last_axis(Q, n_heads)
+    K = group_last_axis(K, n_kv_heads)
+    V = group_last_axis(V, n_kv_heads)
+
+    q_shape = Q.shape
+    grouped_shape = [q_shape[0], n_kv_heads, n_g] + list(q_shape[2:])
+    Q = Q.reshape(grouped_shape)
+    K = K[:, :, None, ...]
+    V = V[:, :, None, ...]
+
+    Q, K = qk_norm(Q, K, params.q_norm, params.k_norm, eps)
+
+    Q_rope = rope_half(Q, positions, base=rope_base)
+    K_rope = rope_half(K, positions, base=rope_base)
+
+    gqa = sdpa(Q_rope, K_rope, V, mask)
+    gqa = gqa.reshape(q_shape)
+    gqa = ungroup_last_axis(gqa)
+
+    return affine(gqa, params.Wo, params.bo)
+
+
+def qwen3_decoder_block(
+    x: np.ndarray,
+    params: Qwen3BlockParams,
+    n_heads: int,
+    n_kv_heads: int,
+    positions: np.ndarray,
+    mask: np.ndarray | None = None,
+    eps: float = 1e-5,
+    rope_base: float = 10000.0,
+):
+    if mask is None:
+        L = x.shape[-2]
+        mask = triangular_mask(L)
+
+    a = rms_norm(x, params.attn_norm, eps=eps)
+    attn = _rope_gqa_qk_norm(a, params.attn, n_heads,
+                             n_kv_heads, positions, mask, eps, rope_base)
+
+    h = add_residual(x, attn)
+    f = rms_norm(h, params.ffn_norm, eps=eps)
+    ffn = swiglu_ffn(f, params.ffn)
+
+    return add_residual(h, ffn)
 
 
 def qwen3_forward(
@@ -132,4 +249,34 @@ def qwen3_forward(
       (causal mask) → merge + o_proj → ``add_residual`` → ``rms_norm`` →
       ``swiglu_ffn`` → residual] → final ``rms_norm`` → ``@ lm_head.T``.
     """
-    raise NotImplementedError("Implement qwen3_forward — see 306_qk_norm/README.md")
+    h = embedding(input_ids, params.tok_embed)
+    L = input_ids.shape[-1]
+    positions = np.arange(0, L)
+    mask = triangular_mask(L)
+
+    for blockParam in params.layers:
+        h = qwen3_decoder_block(h, blockParam, cfg.n_heads, cfg.n_kv_heads,
+                                positions=positions, mask=mask, eps=cfg.norm_eps, rope_base=cfg.rope_base)
+
+    h = rms_norm(h, params.final_norm, cfg.norm_eps)
+    logits = h @ params.lm_head.T
+
+    return logits
+
+
+def generate(input_ids: np.ndarray, params, cfg, *, max_new_tokens: int = 256,
+             rng: np.random.Generator | None = None, temperature: float = 1.0,
+             top_k: int = 0, top_p: float = 1.0, eos_id: int | None = None) -> list[int]:
+    """Stateless autoregressive decode: each step recomputes the full prefix via
+    ``llama_forward`` (no KV-cache — that is L4), samples the last-position logits,
+    appends, and stops at ``eos_id``. Returns the full id list (prompt + generated)."""
+    ids = input_ids[0].tolist()  # (1, S) -> list[int]; batch size 1 by design
+    for _ in range(max_new_tokens):
+        logits = qwen3_forward(np.array([ids]), params, cfg)  # (1, t, V)
+        idx = int(sample(logits[0, -1], rng, temperature=temperature,
+                         top_k=top_k, top_p=top_p))
+        ids.append(idx)
+        if idx == eos_id:
+            break
+
+    return ids

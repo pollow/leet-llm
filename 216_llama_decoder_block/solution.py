@@ -21,7 +21,6 @@ from leet_llm import AttnParams, SwiGLUParams, rms_norm, rope_half, rope_interle
 @dataclass(frozen=True)
 class LlamaBlockParams:
     """Weights for one Llama decoder block: RoPE-GQA + SwiGLU, two RMSNorms, bias-free."""
-
     attn: AttnParams
     ffn: SwiGLUParams
     attn_norm: np.ndarray  # RMSNorm weight (d,)
