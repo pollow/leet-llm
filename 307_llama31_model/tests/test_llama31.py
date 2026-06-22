@@ -3,8 +3,7 @@
 Categories:
   1. Operator unit tests:
      - ``rope_scaled_freqs`` vs frozen genuine-HF ``inv_freq`` goldens (per ``rope_type``);
-       ``default`` equals the plain 213 schedule; ``linear`` divides the frequencies by
-       ``factor``.
+      ``default`` equals the plain 213 schedule.
      - ``rope_from_freqs`` equals 213's ``rope_half`` when fed the default frequencies
        (the apply step is unchanged — only the frequencies are rescaled).
   2. Whole-model parity (A) — ``llama31_forward`` vs the composed float64 oracle in
@@ -19,7 +18,6 @@ Categories:
 from __future__ import annotations
 
 import json
-import math
 import pathlib
 
 import numpy as np
@@ -31,7 +29,6 @@ from leet_llm.grader import load
 _m = load(__file__)
 rope_scaled_freqs = _m.rope_scaled_freqs
 rope_from_freqs = _m.rope_from_freqs
-rope_attention_scale = _m.rope_attention_scale
 Llama31Config = _m.Llama31Config
 load_llama31 = _m.load_llama31
 llama31_forward = _m.llama31_forward
@@ -63,14 +60,7 @@ def test_rope_none_is_default():
     np.testing.assert_allclose(a, b, rtol=1e-12, atol=0)
 
 
-def test_rope_linear_divides_by_factor():
-    """linear scaling divides every inverse frequency by ``factor`` (positions stretch)."""
-    base_inv = rope_scaled_freqs(_HEAD_DIM, _BASE, None)
-    inv = rope_scaled_freqs(_HEAD_DIM, _BASE, {"rope_type": "linear", "factor": 2.0})
-    np.testing.assert_allclose(inv, base_inv / 2.0, rtol=1e-12, atol=0)
-
-
-@pytest.mark.parametrize("rope_type", ["linear", "dynamic", "llama3", "yarn"])
+@pytest.mark.parametrize("rope_type", ["llama3"])
 def test_rope_scaled_matches_hf_golden(rope_type):
     """Per-rope_type inv_freq matches the frozen genuine-HF golden (ROPE_INIT_FUNCTIONS)."""
     scaling = json.loads(str(_ROPE[f"{rope_type}_scaling"]))
@@ -114,36 +104,6 @@ def test_rope_from_freqs_zero_position_is_identity():
     inv = rope_scaled_freqs(_HEAD_DIM, _BASE, None)
     out = rope_from_freqs(x, np.array([0]), inv)
     np.testing.assert_allclose(out, x, rtol=1e-12, atol=1e-12)
-
-
-# ---------------------------------------------------------------------------
-# 1c. rope_attention_scale
-# ---------------------------------------------------------------------------
-
-@pytest.mark.parametrize("rope_type", ["default", "linear", "dynamic", "llama3"])
-def test_rope_attention_scale_is_one_for_non_yarn(rope_type):
-    """Only YaRN rescales attention; every other schedule (incl. llama3) is 1.0."""
-    scaling = None if rope_type == "default" else json.loads(str(_ROPE[f"{rope_type}_scaling"]))
-    assert rope_attention_scale(scaling) == 1.0
-
-
-def test_rope_attention_scale_none_is_one():
-    assert rope_attention_scale(None) == 1.0
-
-
-def test_rope_attention_scale_yarn_mscale():
-    """YaRN with no explicit attention_factor uses mscale = 0.1*ln(factor)+1."""
-    scaling = json.loads(str(_ROPE["yarn_scaling"]))
-    factor = scaling["factor"]
-    expected = 0.1 * math.log(factor) + 1.0
-    assert rope_attention_scale(scaling) == pytest.approx(expected, rel=1e-12)
-
-
-def test_rope_attention_scale_yarn_explicit_factor():
-    """An explicit attention_factor overrides the mscale formula."""
-    assert rope_attention_scale(
-        {"rope_type": "yarn", "factor": 32.0, "attention_factor": 1.5}
-    ) == pytest.approx(1.5, rel=1e-12)
 
 
 # ---------------------------------------------------------------------------

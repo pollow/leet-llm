@@ -33,7 +33,7 @@ Two new operators plus the whole-model assembly:
   layers use full causal.
 - **GPT-OSS MoE** — top-k routing with a **biased** router, a softmax taken over the
   **selected** logits, interleaved gate/up, and a clamped GLU activation (below).
-- **RoPE** — GPT-OSS's real schedule is **YaRN** long-context scaling, reused from 307:
+- **RoPE** — GPT-OSS's real schedule is **YaRN** long-context scaling:
   `inv_freq = rope_scaled_freqs(head_dim, rope_base, cfg.rope_scaling)` and the attention
   temperature `af = rope_attention_scale(cfg.rope_scaling)`, applied as
   `rope_from_freqs(.., inv_freq) * af` (rotate-half). `cfg.rope_scaling=None` → plain
@@ -104,7 +104,7 @@ moe(x_t) = Σ_j  scores[t, j] · out_{idx[t,j]}
 ### Whole-model `gptoss_forward`
 
 ```
-inv_freq = rope_scaled_freqs(head_dim, rope_base, cfg.rope_scaling)   # YaRN (307)
+inv_freq = rope_scaled_freqs(head_dim, rope_base, cfg.rope_scaling)   # YaRN
 af       = rope_attention_scale(cfg.rope_scaling)                     # ≈1.35 for YaRN
 h = embedding(input_ids, tok_embed)
 
@@ -205,7 +205,7 @@ def gptoss_forward(
 - Attention-sink intuition (StreamingLLM): <https://arxiv.org/abs/2309.17453>
 - `303_llama_model/` — the Llama baseline this re-skins
 - `305_sliding_window_attention/` — the band mask reused for the even (sliding) layers
-- `307_llama31_model/` — `rope_scaled_freqs` / `rope_attention_scale` (YaRN) reused here
+- `307_llama31_model/` — Llama-3.1 `llama3` RoPE scaling (contrast reference)
 - `308_mixtral_model/` — Mixtral's MoE, contrasted in the table above
 - Task 213 (`rope_half`), 005 (`softmax`), 007 (`top_k`)
 
@@ -217,9 +217,9 @@ weights are random (no demo) — it exists only as the grade-time genuine-HF cro
 + loader coverage (Tier B). The only forced setting is **eager attention** (the
 explicit softmax-with-sink path our forward mirrors).
 
-> **→ 307 / L4:** GPT-OSS's real RoPE is YaRN long-context scaling. The `inv_freq`
-> rescaling lives in 307 (Llama-3.1 long-context RoPE); long-context decode is an
-> L4 inference-systems concern. This task uses default rotate-half RoPE.
+> **→ L4:** GPT-OSS's real RoPE is YaRN long-context scaling. This task includes the
+> YaRN `inv_freq` + attention-temperature wiring in forward; long-context decode
+> (KV-cache/eviction behavior) is an inference-systems concern deferred to L4.
 
 ---
 

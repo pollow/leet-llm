@@ -9,10 +9,9 @@ Two fixtures are written:
 (float64 composed numpy oracle + frozen HF-named weights), RoPE schedule
 ``rope_type="llama3"`` (the real Llama-3.1 long-context schedule).
 
-``tests/fixtures/rope_freqs.npz`` — per-``rope_type`` ``inv_freq`` goldens computed
-by the genuine HF ``ROPE_INIT_FUNCTIONS`` (``linear`` / ``dynamic`` / ``llama3`` /
-``yarn``) plus the matching ``scaling`` dicts (as JSON) the student passes to
-``rope_scaled_freqs``.  This is the grade-time genuine-HF anchor for the operator.
+``tests/fixtures/rope_freqs.npz`` — ``inv_freq`` goldens for ``default`` and
+``llama3`` computed by the genuine HF ``ROPE_INIT_FUNCTIONS`` plus the matching
+``scaling`` dicts (as JSON) the student passes to ``rope_scaled_freqs``.
 
 The composed oracle uses numpy primitives (matmul, np.exp) with the same operations
 as the student forward, so float64 accumulation is bit-identical → whole-model parity
@@ -27,7 +26,6 @@ rtol=1e-3/atol=1e-3.  Max observed diff is documented below
 from __future__ import annotations
 
 import json
-import math
 import pathlib
 
 import numpy as np
@@ -69,14 +67,6 @@ def _rope_scaled_freqs(head_dim: int, base: float, scaling: dict | None) -> np.n
     rope_type = scaling.get("rope_type", "default")
     if rope_type == "default":
         return inv_freq
-    if rope_type == "linear":
-        return inv_freq / scaling["factor"]
-    if rope_type == "dynamic":
-        factor = scaling["factor"]
-        max_pos = scaling["max_position_embeddings"]
-        seq_len = max(scaling.get("seq_len", max_pos), max_pos)
-        new_base = base * ((factor * seq_len / max_pos) - (factor - 1)) ** (dim / (dim - 2))
-        return 1.0 / (new_base ** (np.arange(0, dim, 2, dtype=np.float64) / dim))
     if rope_type == "llama3":
         factor = scaling["factor"]
         lo = scaling["low_freq_factor"]
@@ -89,28 +79,6 @@ def _rope_scaled_freqs(head_dim: int, base: float, scaling: dict | None) -> np.n
         smoothed = (1 - smooth) * inv_llama / factor + smooth * inv_llama
         is_med = ~(wl < high_wl) & ~(wl > low_wl)
         return np.where(is_med, smoothed, inv_llama)
-    if rope_type == "yarn":
-        factor = scaling["factor"]
-        old = scaling["original_max_position_embeddings"]
-        beta_fast = scaling.get("beta_fast", 32)
-        beta_slow = scaling.get("beta_slow", 1)
-        truncate = scaling.get("truncate", True)
-        pos_freqs = base ** (np.arange(0, dim, 2, dtype=np.float64) / dim)
-        extrap = 1.0 / pos_freqs
-        interp = 1.0 / (factor * pos_freqs)
-
-        def fcd(num_rot):
-            return (dim * math.log(old / (num_rot * 2 * math.pi))) / (2 * math.log(base))
-
-        low, high = fcd(beta_fast), fcd(beta_slow)
-        if truncate:
-            low, high = math.floor(low), math.ceil(high)
-        low, high = max(low, 0), min(high, dim - 1)
-        if low == high:
-            high += 0.001
-        ramp = np.clip((np.arange(dim // 2, dtype=np.float64) - low) / (high - low), 0, 1)
-        extrap_factor = 1 - ramp
-        return interp * (1 - extrap_factor) + extrap * extrap_factor
     raise ValueError(f"unknown rope_type {rope_type!r}")
 
 
@@ -199,19 +167,10 @@ def _rope_freq_goldens():
     # (student-facing scaling dict, HF config max_position_embeddings, seq_len arg)
     cases = {
         "default": ({"rope_type": "default"}, MAX_POS, None),
-        "linear": ({"rope_type": "linear", "factor": 4.0}, MAX_POS, None),
-        "dynamic": (
-            {"rope_type": "dynamic", "factor": 4.0, "max_position_embeddings": 64, "seq_len": 256},
-            64, 256,
-        ),
         "llama3": (
             {"rope_type": "llama3", "factor": 8.0, "low_freq_factor": 1.0,
              "high_freq_factor": 4.0, "original_max_position_embeddings": 64},
             MAX_POS, None,
-        ),
-        "yarn": (
-            {"rope_type": "yarn", "factor": 4.0, "original_max_position_embeddings": 64},
-            256, None,
         ),
     }
     out = {"head_dim": np.array(HEAD_DIM), "rope_base": np.array(ROPE_BASE)}

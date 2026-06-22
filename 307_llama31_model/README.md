@@ -9,23 +9,17 @@ RMSNorm and rotate-half RoPE are all unchanged — only the *frequencies* that g
 the rotation are bent. You implement the frequency schedule and the apply step, then
 assemble a runnable `llama31_forward → logits`.
 
-Three new operators plus the whole-model assembly:
+Two new operators plus the whole-model assembly:
 
 1. **`rope_scaled_freqs(head_dim, base, scaling)`** — compute the per-pair inverse
-   frequencies `inv_freq` for a `rope_type` (`default` / `linear` / `dynamic` /
-   `llama3` / `yarn`). With `scaling=None` this is the plain RoPE schedule; the other
-   types bend the low frequencies so far-apart positions *interpolate* rather than
-   extrapolate off the end of the pretraining range.
+   frequencies `inv_freq` for `default` (or `None`) and Llama-3.1's native
+   `rope_type="llama3"`. With `scaling=None` this is plain RoPE; `llama3` bends low
+   frequencies so far-apart positions *interpolate* rather than extrapolate.
 2. **`rope_from_freqs(x, positions, inv_freq)`** — rotate-half RoPE applied with a
    **precomputed** `inv_freq`. Identical rotation to 213's `rope_half`; the only
    difference is that the (rescaled) frequencies are supplied rather than derived from
    `base`.
-3. **`rope_attention_scale(scaling)`** — the *other* half of RoPE scaling: a scalar
-   attention "temperature" multiplied into the rotated q & k. It is `1.0` for
-   `default`/`linear`/`dynamic`/`llama3` (so Llama-3.1 is a no-op) and the YaRN
-   `mscale` for `yarn`. Llama-3.1 itself never needs it (its `llama3` schedule scores
-   `1.0`), but it is **reused by GPT-OSS (309)**, whose real RoPE is YaRN.
-4. **`Llama31Config` / `Llama31Params` / `load_llama31` / `llama31_forward`** — the
+3. **`Llama31Config` / `Llama31Params` / `load_llama31` / `llama31_forward`** — the
    Llama-3.1 decoder-only model.
 
 **GIVEN — the Llama-3.1 wrinkle** (architecture-as-spec):
@@ -37,9 +31,8 @@ Three new operators plus the whole-model assembly:
   attention scale `head_dim ** -0.5` with `head_dim = hidden_size // n_heads`.
 
 > **→ L4:** this task implements the forward-pass arithmetic only. The KV-cache side
-> of long-context decoding — chunked prefill, position bookkeeping past the original
-> window, and the `dynamic` schedule's per-step `inv_freq` recompute — is an
-> inference-systems concern, deferred to Level 4.
+> of long-context decoding — chunked prefill and position bookkeeping past the
+> original window — is an inference-systems concern, deferred to Level 4.
 
 ---
 
@@ -57,19 +50,6 @@ wavelen[j]  = 2π / inv_freq[j]
 `scaling["rope_type"]` picks the schedule:
 
 - **`default` / `None`** — `inv_freq` unchanged.
-- **`linear`** — `inv_freq /= factor`. Stretching the frequencies down is equivalent
-  to dividing the positions, so an `L`-token sequence occupies the angular span of
-  `L / factor` original positions.
-- **`dynamic`** (NTK-by-parts) — raise the base instead of the positions:
-
-  ```
-  seq_len = max(scaling["seq_len"], max_position_embeddings)
-  base'   = base * ((factor · seq_len / max_position_embeddings) − (factor − 1)) ** (d / (d − 2))
-  inv_freq = 1 / base' ** (2j / d)
-  ```
-
-  At `seq_len = max_position_embeddings` the bracket is `1`, so `dynamic` collapses to
-  `default` — the scaling only kicks in once the context grows past the trained window.
 - **`llama3`** — keep high frequencies, divide low frequencies by `factor`, and
   smoothly interpolate the band in between. With `low_freq_wavelen = O / low_freq_factor`,
   `high_freq_wavelen = O / high_freq_factor`, and `O = original_max_position_embeddings`:
@@ -81,38 +61,6 @@ wavelen[j]  = 2π / inv_freq[j]
       s          = (O / wavelen − low_freq_factor) / (high_freq_factor − low_freq_factor)
       inv_freq[j] = (1 − s) · inv_freq[j] / factor + s · inv_freq[j]
   ```
-
-- **`yarn`** — blend extrapolated (`1/pos_freqs`) and interpolated (`1/(factor·pos_freqs)`)
-  frequencies with a linear ramp over the *correction range* `[low, high]` derived from
-  `beta_fast`/`beta_slow`:
-
-  ```
-  pos_freqs[j] = base ** (2j / d)
-  low,high     = correction_range(beta_fast, beta_slow)         # see find_correction_dim below
-  ramp         = clip((arange(d/2) − low) / (high − low), 0, 1)
-  extrap_factor = 1 − ramp
-  inv_freq = (1/(factor·pos_freqs)) · (1 − extrap_factor) + (1/pos_freqs) · extrap_factor
-
-  find_correction_dim(r) = d · ln(O / (r · 2π)) / (2 · ln(base))   # O = original_max_position_embeddings
-  low  = floor(find_correction_dim(beta_fast));  high = ceil(find_correction_dim(beta_slow))
-  low, high = max(low, 0), min(high, d − 1)                        # truncate=True (default)
-  ```
-
-### `rope_attention_scale`
-
-YaRN (and longrope) rescale not only the frequencies but also the **attention logits**,
-multiplying the cos/sin — and therefore the rotated q & k — by a scalar. Every other
-schedule leaves it at `1.0`:
-
-```
-default / linear / dynamic / llama3:   scale = 1.0
-yarn (no explicit attention_factor):   scale = 0.1 · ln(factor) + 1   if factor > 1, else 1.0
-yarn (explicit attention_factor):      scale = attention_factor
-```
-
-Llama-3.1 uses `llama3`, so its scale is `1.0` and `llama31_forward` multiplies by a
-no-op — but GPT-OSS (309) reuses this operator for its real YaRN schedule, where the
-scale is ≈ `1.35`.
 
 ### `rope_from_freqs`
 
@@ -129,13 +77,12 @@ rotate_half(x) = concat([-x[..., d/2:], x[..., :d/2]], axis=-1)
 
 ```
 inv_freq = rope_scaled_freqs(head_dim, rope_base, cfg.rope_scaling)   # once
-af       = rope_attention_scale(cfg.rope_scaling)                     # 1.0 for llama3
 h = embedding(input_ids, tok_embed)
 
 for layer in layers:
     a = rms_norm(h, input_layernorm)
-    q = (a @ q_proj.T) → (B, H,   L, head_dim) ; rope_from_freqs(q, positions, inv_freq) * af
-    k = (a @ k_proj.T) → (B, KVH, L, head_dim) ; rope_from_freqs(k, positions, inv_freq) * af
+    q = (a @ q_proj.T) → (B, H,   L, head_dim) ; rope_from_freqs(q, positions, inv_freq)
+    k = (a @ k_proj.T) → (B, KVH, L, head_dim) ; rope_from_freqs(k, positions, inv_freq)
     v = (a @ v_proj.T) → (B, KVH, L, head_dim)
     k, v   = repeat_kv(k, v, H // KVH)                       # GQA
     a = sdpa(q, k, v, triangular_mask(L)) → merge heads → @ o_proj.T
@@ -192,10 +139,6 @@ def rope_from_freqs(
     inv_freq: np.ndarray,          # (head_dim / 2,)
 ) -> np.ndarray:                   # same shape as x
 
-def rope_attention_scale(
-    scaling: dict | None = None,   # rope_scaling config; None → 1.0
-) -> float:                        # attention temperature (1.0 except yarn)
-
 def load_llama31(weights: dict, cfg: Llama31Config) -> Llama31Params: ...
 
 def llama31_forward(
@@ -212,8 +155,6 @@ def llama31_forward(
 
 - Llama-3.1 RoPE scaling (the `llama3` schedule): `transformers.modeling_rope_utils`
   (`_compute_llama3_parameters`) — the exact arithmetic reference.
-- YaRN paper: <https://arxiv.org/abs/2309.00071>
-- NTK-by-parts / dynamic scaling intuition: <https://www.reddit.com/r/LocalLLaMA/comments/14lz7j5/>
 - `303_llama_model/` — the Llama baseline this re-skins
 - Task 213 (`rope_half` / `rope_interleaved`), 205 (`sdpa`), 214 (`swiglu_ffn`), 009 (`triangular_mask`)
 
@@ -241,16 +182,12 @@ bash 307_llama31_model/download.sh
 The test suite checks:
 
 - `test_rope_default_matches_base_freqs` / `test_rope_none_is_default` /
-  `test_rope_linear_divides_by_factor` / `test_rope_scaled_matches_hf_golden` /
-  `test_rope_llama3_bends_low_frequencies`: `rope_scaled_freqs` per `rope_type` vs the
-  frozen genuine-HF `inv_freq` goldens and its scaling invariants.
+  `test_rope_scaled_matches_hf_golden` / `test_rope_llama3_bends_low_frequencies`:
+  `rope_scaled_freqs` for `default` and `llama3` vs frozen genuine-HF `inv_freq`
+  goldens and scaling invariants.
 - `test_rope_from_freqs_equals_rope_half_on_default` /
   `test_rope_from_freqs_zero_position_is_identity`: the apply step matches 213's
   `rope_half` and is the identity at position 0.
-- `test_rope_attention_scale_is_one_for_non_yarn` /
-  `test_rope_attention_scale_yarn_mscale` / `test_rope_attention_scale_yarn_explicit_factor`:
-  the attention temperature is `1.0` except for YaRN, where it is the `mscale`
-  (or an explicit `attention_factor`).
 - `test_llama31_logits_match_oracle`: whole-model logit parity vs the committed float64
   oracle at `rtol=1e-9`.
 - `test_llama31_logits_shape` / `test_llama31_causal`: output shape and causal masking.
