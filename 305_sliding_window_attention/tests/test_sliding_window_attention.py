@@ -37,16 +37,16 @@ FIX = pathlib.Path(__file__).parent / "fixtures"
 
 
 def test_matches_hf_mistral_band():
-    """``sliding_window_mask`` must exactly equal the HF Mistral additive mask."""
+    """``sliding_window_mask`` must match HF semantics (True == masked)."""
     d = np.load(FIX / "band.npz")
     L = int(d["seq_len"])
     W = int(d["window"])
-    expected = d["mask"]  # (L, L) float64, 0.0 attended / -inf masked
+    expected = np.isinf(d["mask"])  # (L, L) bool, True masked / False attended
 
     result = sliding_window_mask(L, W)
 
     assert result.shape == (L, L), f"expected shape ({L},{L}), got {result.shape}"
-    np.testing.assert_allclose(result, expected, rtol=1e-9, atol=1e-9)
+    np.testing.assert_array_equal(result, expected)
 
 
 # ---------------------------------------------------------------------------
@@ -58,7 +58,7 @@ def test_matches_hf_mistral_band():
 def test_shape(L, W):
     out = sliding_window_mask(L, W)
     assert out.shape == (L, L)
-    assert out.dtype == np.float64
+    assert out.dtype == np.bool_
 
 
 # ---------------------------------------------------------------------------
@@ -74,29 +74,29 @@ def test_attended_set(L, W):
         for j in range(L):
             expected_attended = (i - W < j <= i)
             if expected_attended:
-                assert mask[i, j] == 0.0, (
-                    f"position ({i},{j}) should be attended (0.0) but got {mask[i,j]}"
+                assert not mask[i, j], (
+                    f"position ({i},{j}) should be attended (False) but got {mask[i,j]}"
                 )
             else:
-                assert mask[i, j] == -np.inf, (
-                    f"position ({i},{j}) should be masked (-inf) but got {mask[i,j]}"
+                assert mask[i, j], (
+                    f"position ({i},{j}) should be masked (True) but got {mask[i,j]}"
                 )
 
 
 def test_causal_upper_triangle_always_masked():
-    """Future positions (j > i) must always be -inf regardless of window size."""
+    """Future positions (j > i) must always be masked regardless of window size."""
     L, W = 8, 6
     mask = sliding_window_mask(L, W)
     # upper triangle (j > i)
     i_idx, j_idx = np.triu_indices(L, k=1)
-    assert np.all(mask[i_idx, j_idx] == -np.inf), "future positions must be -inf"
+    assert np.all(mask[i_idx, j_idx]), "future positions must be masked (True)"
 
 
 def test_diagonal_always_attended():
-    """Self-attention (j == i) must always be 0.0 (inside any window >= 1)."""
+    """Self-attention (j == i) must always be attended (False)."""
     L, W = 7, 2
     mask = sliding_window_mask(L, W)
-    assert np.all(np.diag(mask) == 0.0), "diagonal (self-attention) must be 0.0"
+    assert np.all(~np.diag(mask)), "diagonal (self-attention) must be False"
 
 
 # ---------------------------------------------------------------------------
@@ -106,12 +106,9 @@ def test_diagonal_always_attended():
 
 @pytest.mark.parametrize("L,W", [(5, 5), (5, 10), (6, 6), (8, 100)])
 def test_window_ge_L_is_causal_mask(L, W):
-    """When window >= seq_len, the mask is the standard causal (lower-triangle) mask."""
+    """When window >= seq_len, the mask is the standard causal bool mask."""
     result = sliding_window_mask(L, W)
-    # triangular_mask(L) is bool True = masked (upper triangle)
-    # Convert to additive form for comparison
-    causal_additive = np.where(triangular_mask(L), -np.inf, 0.0)
-    np.testing.assert_array_equal(result, causal_additive)
+    np.testing.assert_array_equal(result, triangular_mask(L))
 
 
 # ---------------------------------------------------------------------------
@@ -123,8 +120,8 @@ def test_window_1_only_self_attention():
     """Window=1 means query i may only attend to j=i (no past context)."""
     L = 5
     mask = sliding_window_mask(L, 1)
-    expected = np.full((L, L), -np.inf, dtype=np.float64)
-    np.fill_diagonal(expected, 0.0)
+    expected = np.ones((L, L), dtype=bool)
+    np.fill_diagonal(expected, False)
     np.testing.assert_array_equal(mask, expected)
 
 
@@ -148,16 +145,12 @@ def test_sdpa_zeroes_out_of_band_contributions():
 
     mask = sliding_window_mask(L, W)
 
-    # Use the additive mask as a boolean mask for sdpa
-    # sdpa takes bool mask (True = masked), so invert
-    bool_mask = np.isinf(mask)  # True where masked (-inf), False where attended
-
     # Q, K are random; V is identity (V[j] = one-hot(j)) so we can read off weights
     Q = rng.standard_normal((1, 1, L, d_k))
     K = rng.standard_normal((1, 1, L, d_k))
     V_identity = np.eye(L, dtype=np.float64)[np.newaxis, np.newaxis, :, :]  # (1,1,L,L)
 
-    out = sdpa(Q, K, V_identity, mask=bool_mask)  # (1, 1, L, L)
+    out = sdpa(Q, K, V_identity, mask=mask)  # (1, 1, L, L)
     weights = out[0, 0]  # (L, L): weights[i, j] = how much query i used key j
 
     for i in range(L):
@@ -170,8 +163,8 @@ def test_sdpa_zeroes_out_of_band_contributions():
                 )
 
 
-def test_additive_mask_format_compatible_with_sdpa():
-    """The additive mask can be applied directly to scores before softmax.
+def test_bool_mask_convertible_to_additive_scores():
+    """Boolean mask can be converted to additive format with equivalent effect.
 
     Use the mask as additive offset (adding to QK^T/sqrt(d_k)) and verify
     that positions outside the band get softmax weight ~0.
@@ -181,19 +174,20 @@ def test_additive_mask_format_compatible_with_sdpa():
     W = 2
     d_k = 8
 
-    sw_mask = sliding_window_mask(L, W)  # (L, L) additive
+    sw_mask = sliding_window_mask(L, W)  # (L, L) bool
+    additive_mask = np.where(sw_mask, -np.inf, 0.0)
 
     Q = rng.standard_normal((L, d_k))
     K = rng.standard_normal((L, d_k))
     V = np.eye(L, dtype=np.float64)
 
-    # Compute attention manually with additive mask
-    scores = (Q @ K.T) / np.sqrt(d_k) + sw_mask  # (L, L)
+    # Compute attention manually with additive mask converted from bool
+    scores = (Q @ K.T) / np.sqrt(d_k) + additive_mask  # (L, L)
     # Softmax row-wise
     scores_max = scores.max(axis=-1, keepdims=True)
     exp_scores = np.exp(scores - scores_max)
     # positions with -inf → exp(-inf) = 0
-    exp_scores = np.where(np.isinf(sw_mask), 0.0, exp_scores)
+    exp_scores = np.where(sw_mask, 0.0, exp_scores)
     attn_weights = exp_scores / exp_scores.sum(axis=-1, keepdims=True)  # (L, L)
 
     for i in range(L):

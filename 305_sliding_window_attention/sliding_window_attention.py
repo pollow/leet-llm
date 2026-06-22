@@ -27,7 +27,7 @@ import numpy as np
 
 
 def sliding_window_mask(seq_len: int, window: int) -> np.ndarray:
-    """Return an additive ``(seq_len, seq_len)`` causal sliding-window mask.
+    """Return a boolean ``(seq_len, seq_len)`` causal sliding-window mask.
 
     The mask is ``0.0`` where query ``i`` may attend to key ``j`` (i.e. ``j``
     is within the causal window ``(i − window, i]``) and ``-inf`` elsewhere.
@@ -43,9 +43,8 @@ def sliding_window_mask(seq_len: int, window: int) -> np.ndarray:
 
     Returns
     -------
-    np.ndarray, shape ``(L, L)``, dtype float64
-        Additive pre-softmax mask.  Add it to the raw attention scores
-        ``Q K^T / sqrt(d_k)`` before the softmax.
+    np.ndarray, shape ``(L, L)``, dtype bool
+        Boolean mask where ``True`` means masked and ``False`` means attended.
     """
     raise NotImplementedError("Implement sliding_window_mask — see 305_sliding_window_attention/README.md")
 

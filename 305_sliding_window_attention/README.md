@@ -42,15 +42,14 @@ concern.
 
 ### Band causal mask
 
-With sequence length `L` and window size `W`, the additive pre-softmax mask is:
+With sequence length `L` and window size `W`, the boolean mask is:
 
 ```
-mask[i, j] = 0.0   if  i − W < j ≤ i   (causal window: j is recent enough)
-             -inf   otherwise            (future or too-old token)
+mask[i, j] = False   if  i − W < j ≤ i   (causal window: j is recent enough)
+             True    otherwise            (future or too-old token)
 ```
 
-The mask is added to the scaled dot-product scores `Q Kᵀ / √d_k` before
-softmax, sending masked logits to −∞ (weight → 0).
+This mask is passed to `sdpa` where `True` positions are masked out.
 
 When `W ≥ L` no token is ever too old and the mask reduces to the standard
 causal (lower-triangular) mask.
@@ -81,11 +80,11 @@ as-is, **no un-permute** (unlike 303/304 which use interleaved + un-permute).
 
 ```python
 def sliding_window_mask(seq_len: int, window: int) -> np.ndarray:
-    """Return an additive (seq_len, seq_len) causal sliding-window mask.
+    """Return a bool (seq_len, seq_len) causal sliding-window mask.
 
-    0.0  where query i may attend to key j  (i - window < j <= i)
-    -inf elsewhere (future or outside the band)
-    Returns float64 array of shape (L, L).
+    False where query i may attend to key j  (i - window < j <= i)
+    True  elsewhere (future or outside the band)
+    Returns bool array of shape (L, L), where True means masked.
     """
 
 @dataclass(frozen=True)

@@ -25,12 +25,14 @@ from dataclasses import dataclass
 
 import numpy as np
 
+from leet_llm import AttnParams, LlamaBlockParams, SwiGLUParams, embedding, llama_decoder_block, rms_norm
+
 
 def sliding_window_mask(seq_len: int, window: int) -> np.ndarray:
-    """Return an additive ``(seq_len, seq_len)`` causal sliding-window mask.
+    """Return a boolean ``(seq_len, seq_len)`` causal sliding-window mask.
 
-    The mask is ``0.0`` where query ``i`` may attend to key ``j`` (i.e. ``j``
-    is within the causal window ``(i − window, i]``) and ``-inf`` elsewhere.
+    The mask is ``False`` where query ``i`` may attend to key ``j`` (i.e. ``j``
+    is within the causal window ``(i − window, i]``) and ``True`` elsewhere.
 
     Parameters
     ----------
@@ -43,11 +45,14 @@ def sliding_window_mask(seq_len: int, window: int) -> np.ndarray:
 
     Returns
     -------
-    np.ndarray, shape ``(L, L)``, dtype float64
-        Additive pre-softmax mask.  Add it to the raw attention scores
-        ``Q K^T / sqrt(d_k)`` before the softmax.
+    np.ndarray, shape ``(L, L)``, dtype bool
+        Boolean mask where ``True`` means masked and ``False`` means attended.
     """
-    raise NotImplementedError("Implement sliding_window_mask — see 305_sliding_window_attention/README.md")
+    # Future positions: j > i
+    future_mask = np.triu(np.ones((seq_len, seq_len), dtype=bool), k=1)
+    # Too-old positions: j <= i - window
+    too_old_mask = np.tril(np.ones((seq_len, seq_len), dtype=bool), k=-window)
+    return future_mask | too_old_mask
 
 
 # ---------------------------------------------------------------------------
@@ -93,7 +98,38 @@ def load_mistral(weights: dict, cfg: MistralConfig) -> MistralParams:
       model.layers.{i}.mlp.up_proj.weight              (ffn_dim, d)
       model.layers.{i}.mlp.down_proj.weight            (d, ffn_dim)
     """
-    raise NotImplementedError("Implement load_mistral — see 305_sliding_window_attention/README.md")
+
+    tok_embed = weights["model.embed_tokens.weight"]
+    final_norm = weights["model.norm.weight"]
+    lm_head = weights["lm_head.weight"]
+
+    layers: list[LlamaBlockParams] = []
+    for i in range(cfg.n_layers):
+        prefix = f"model.layers.{i}"
+        attn_norm = weights[f"{prefix}.input_layernorm.weight"]
+        ffn_norm = weights[f"{prefix}.post_attention_layernorm.weight"]
+
+        Wq = weights[f"{prefix}.self_attn.q_proj.weight"]
+        Wk = weights[f"{prefix}.self_attn.k_proj.weight"]
+        Wv = weights[f"{prefix}.self_attn.v_proj.weight"]
+        Wo = weights[f"{prefix}.self_attn.o_proj.weight"]
+        attn = AttnParams(
+            Wq=Wq, Wk=Wk, Wv=Wv, Wo=Wo, bq=None, bk=None, bv=None, bo=None
+        )
+
+        W1 = weights[f"{prefix}.mlp.gate_proj.weight"]  # gate
+        W3 = weights[f"{prefix}.mlp.up_proj.weight"]  # up
+        W2 = weights[f"{prefix}.mlp.down_proj.weight"]  # down
+        ffn = SwiGLUParams(W1=W1, W3=W3, W2=W2)
+
+        layers.append(
+            LlamaBlockParams(attn=attn, ffn=ffn,
+                             attn_norm=attn_norm, ffn_norm=ffn_norm)
+        )
+
+    return MistralParams(
+        tok_embed=tok_embed, layers=layers, final_norm=final_norm, lm_head=lm_head
+    )
 
 
 def mistral_forward(
@@ -112,4 +148,17 @@ def mistral_forward(
       merge + o_proj → ``add_residual`` → ``rms_norm`` → ``swiglu_ffn`` →
       residual] → final ``rms_norm`` → ``@ lm_head.T``.
     """
-    raise NotImplementedError("Implement mistral_forward — see 305_sliding_window_attention/README.md")
+    h = embedding(input_ids, params.tok_embed)
+    L = input_ids.shape[-1]
+
+    positions = np.arange(0, L)
+    mask = sliding_window_mask(L, cfg.sliding_window)
+
+    for blockParam in params.layers:
+        h = llama_decoder_block(h, blockParam, cfg.n_heads, cfg.n_kv_heads,
+                                positions=positions, mask=mask, eps=cfg.norm_eps, rope="half")
+
+    h = rms_norm(h, params.final_norm, cfg.norm_eps)
+    logits = h @ params.lm_head.T
+
+    return logits
