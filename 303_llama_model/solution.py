@@ -21,6 +21,7 @@ from leet_llm import (
     rms_norm,
     triangular_mask,
     embedding,
+    RopeParams,
 )
 
 
@@ -39,7 +40,8 @@ class LlamaConfig:
 @dataclass(frozen=True)
 class LlamaParams:
     tok_embed: np.ndarray  # (V, d)
-    layers: list  # list[LlamaBlockParams] (from leet_llm import LlamaBlockParams)
+    # list[LlamaBlockParams] (from leet_llm import LlamaBlockParams)
+    layers: list
     final_norm: np.ndarray  # (d,) RMSNorm weight
     lm_head: np.ndarray  # (V, d)
 
@@ -79,7 +81,11 @@ def load_llama(weights: dict, cfg: LlamaConfig) -> LlamaParams:
 
 
 def llama_forward(
-    input_ids: np.ndarray, params: LlamaParams, cfg: LlamaConfig, start_pos: int = 0
+    input_ids: np.ndarray,
+    params: LlamaParams,
+    cfg: LlamaConfig,
+    start_pos: int = 0,
+    rope_params: RopeParams = RopeParams(),
 ) -> np.ndarray:
     """Token embed → N Llama blocks (causal, positions start_pos..) → final RMSNorm → lm_head.
     Returns logits (B, L, V)."""
@@ -90,8 +96,16 @@ def llama_forward(
     mask = triangular_mask(L)
 
     for blockParam in params.layers:
-        h = llama_decoder_block(h, blockParam, cfg.n_heads, cfg.n_kv_heads,
-            positions=positions, mask=mask, eps=cfg.norm_eps)
+        h = llama_decoder_block(
+            h,
+            blockParam,
+            cfg.n_heads,
+            cfg.n_kv_heads,
+            positions=positions,
+            mask=mask,
+            eps=cfg.norm_eps,
+            rope_params=rope_params,
+        )
 
     h = rms_norm(h, params.final_norm, cfg.norm_eps)
     logits = h @ params.lm_head.T

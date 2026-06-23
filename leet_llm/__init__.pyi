@@ -80,6 +80,9 @@ llama_decoder_block: Any
 LlamaBlockParams: Any
 sample: Any
 generate: Any
+rope_scaled_freqs: Any
+rope_from_freqs: Any
+RopeParams: Any
 
 def __getattr__(name: str) -> Any: ...
 def __dir__() -> list[str]: ...

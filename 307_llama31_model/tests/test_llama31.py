@@ -23,12 +23,10 @@ import pathlib
 import numpy as np
 import pytest
 
-from leet_llm import rope_half
+from leet_llm import rope_half, rope_scaled_freqs, rope_from_freqs 
 from leet_llm.grader import load
 
 _m = load(__file__)
-rope_scaled_freqs = _m.rope_scaled_freqs
-rope_from_freqs = _m.rope_from_freqs
 Llama31Config = _m.Llama31Config
 load_llama31 = _m.load_llama31
 llama31_forward = _m.llama31_forward
@@ -84,14 +82,14 @@ def test_rope_llama3_bends_low_frequencies():
 # 1b. rope_from_freqs
 # ---------------------------------------------------------------------------
 
-def test_rope_from_freqs_equals_rope_half_on_default():
+def test_rope_from_freqs_equals_rope_half():
     """rope_from_freqs with the default frequencies reproduces 213's rope_half exactly."""
     rng = np.random.default_rng(1)
     B, Hh, L = 2, 3, 5
     x = rng.standard_normal((B, Hh, L, _HEAD_DIM))
     positions = np.arange(L)
     inv = rope_scaled_freqs(_HEAD_DIM, _BASE, None)
-    out = rope_from_freqs(x, positions, inv)
+    out = rope_from_freqs(x, positions, inv, "half")
     ref = rope_half(x, positions, _BASE)
     assert out.shape == x.shape
     np.testing.assert_allclose(out, ref, rtol=1e-9, atol=1e-12)
@@ -102,7 +100,7 @@ def test_rope_from_freqs_zero_position_is_identity():
     rng = np.random.default_rng(2)
     x = rng.standard_normal((1, 1, 1, _HEAD_DIM))
     inv = rope_scaled_freqs(_HEAD_DIM, _BASE, None)
-    out = rope_from_freqs(x, np.array([0]), inv)
+    out = rope_from_freqs(x, np.array([0]), inv, "half")
     np.testing.assert_allclose(out, x, rtol=1e-12, atol=1e-12)
 
 

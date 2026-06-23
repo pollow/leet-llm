@@ -5,7 +5,7 @@ frequencies are **rescaled** by a ``rope_scaling`` schedule so the same
 pretrained weights generalise to far longer contexts.  Everything else —
 GQA, SwiGLU, RMSNorm, rotate-half RoPE — is unchanged from the baseline.
 
-Two delta operators plus the full Llama-3.1 decoder assembly:
+Implement two rope operators in 213_rope:
 
 1. ``rope_scaled_freqs(head_dim, base, scaling)`` — compute the per-pair
    inverse frequencies ``inv_freq`` for ``default`` (or ``None``) and
@@ -13,8 +13,9 @@ Two delta operators plus the full Llama-3.1 decoder assembly:
 2. ``rope_from_freqs(x, positions, inv_freq)`` — rotate-half RoPE applied with
    a **precomputed** ``inv_freq`` (213's ``rope_half`` derives the frequencies
    from ``base`` internally; here the scaled frequencies are passed in).
-3. ``Llama31Config`` / ``Llama31Params`` / ``load_llama31`` / ``llama31_forward``
-   — the Llama-3.1 decoder-only model wired through 303's forward.
+
+Refactor 303_llama_model to support new RoPE strategy:
+1. ``llama31_forward`` the Llama-3.1 decoder-only model wired through 303's forward.
 
 See README.md. Run ``uv run grade 307`` to check your work.
 
@@ -38,7 +39,11 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from leet_llm import LlamaParams
+from leet_llm import (
+    LlamaConfig,
+    LlamaParams,
+    llama_forward,
+)
 
 
 def rope_scaled_freqs(
@@ -74,7 +79,9 @@ def rope_scaled_freqs(
     np.ndarray, shape ``(head_dim / 2,)``
         The (possibly rescaled) inverse frequencies, float64.
     """
-    raise NotImplementedError("Implement rope_scaled_freqs — see 307_llama31_model/README.md")
+    raise NotImplementedError(
+        "Implement rope_scaled_freqs — see 307_llama31_model/README.md"
+    )
 
 
 def rope_from_freqs(
@@ -109,7 +116,9 @@ def rope_from_freqs(
     np.ndarray
         ``x`` rotated by RoPE, same shape as ``x``.
     """
-    raise NotImplementedError("Implement rope_from_freqs — see 307_llama31_model/README.md")
+    raise NotImplementedError(
+        "Implement rope_from_freqs — see 307_llama31_model/README.md"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -160,7 +169,9 @@ Llama31Params = LlamaParams
 
 def load_llama31(weights: dict, cfg: Llama31Config) -> Llama31Params:
     """Reuse 303's Llama weight mapping; 307 changes only RoPE frequencies."""
-    raise NotImplementedError("Implement load_llama31 — see 307_llama31_model/README.md")
+    raise NotImplementedError(
+        "Implement load_llama31 — see 307_llama31_model/README.md"
+    )
 
 
 def llama31_forward(
@@ -175,4 +186,20 @@ def llama31_forward(
     refactoring the reused block/forward path so scaled rotate-half RoPE can be injected.
     Returns logits of shape ``(B, L, V)``.
     """
-    raise NotImplementedError("Implement llama31_forward — see 307_llama31_model/README.md")
+    cfg303 = LlamaConfig(
+        dim=cfg.dim,
+        n_layers=cfg.n_layers,
+        n_heads=cfg.n_heads,
+        n_kv_heads=cfg.n_kv_heads,
+        vocab_size=cfg.vocab_size,
+        max_seq_len=cfg.max_seq_len,
+        norm_eps=cfg.norm_eps,
+        rope_base=cfg.rope_base,
+    )
+    # TODO(307): inject scaled rotate-half RoPE for llama3 parity.
+    return llama_forward(
+        input_ids,
+        params,
+        cfg303,
+        start_pos=start_pos,
+    )

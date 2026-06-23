@@ -5,7 +5,7 @@ frequencies are **rescaled** by a ``rope_scaling`` schedule so the same
 pretrained weights generalise to far longer contexts.  Everything else —
 GQA, SwiGLU, RMSNorm, rotate-half RoPE — is unchanged from the baseline.
 
-Two delta operators plus the full Llama-3.1 decoder assembly:
+Implement two rope operators in 213_rope:
 
 1. ``rope_scaled_freqs(head_dim, base, scaling)`` — compute the per-pair
    inverse frequencies ``inv_freq`` for ``default`` (or ``None``) and
@@ -13,8 +13,9 @@ Two delta operators plus the full Llama-3.1 decoder assembly:
 2. ``rope_from_freqs(x, positions, inv_freq)`` — rotate-half RoPE applied with
    a **precomputed** ``inv_freq`` (213's ``rope_half`` derives the frequencies
    from ``base`` internally; here the scaled frequencies are passed in).
-3. ``Llama31Config`` / ``Llama31Params`` / ``load_llama31`` / ``llama31_forward``
-   — the Llama-3.1 decoder-only model wired through 303's forward.
+
+Refactor 303_llama_model to support new RoPE strategy:
+1. ``llama31_forward`` the Llama-3.1 decoder-only model wired through 303's forward.
 
 See README.md. Run ``uv run grade 307`` to check your work.
 
@@ -38,108 +39,13 @@ from dataclasses import dataclass, fields, is_dataclass
 
 import numpy as np
 
-from leet_llm import LlamaConfig, LlamaParams, llama_forward, load_llama, split_halves
-
-
-def rope_scaled_freqs(
-    head_dim: int,
-    base: float,
-    scaling: dict | None = None,
-) -> np.ndarray:
-    """Compute the RoPE inverse frequencies under a ``rope_scaling`` schedule.
-
-    The baseline (``default``) schedule is::
-
-        inv_freq = 1.0 / base ** (arange(0, head_dim, 2) / head_dim)   # (head_dim/2,)
-
-    ``scaling`` selects the schedule via ``scaling["rope_type"]``:
-
-    - ``"default"`` / ``None`` — the baseline above (213's frequencies).
-    - ``"llama3"`` — keep high frequencies, divide low frequencies by ``factor``,
-      smoothly interpolate the medium band (Llama-3.1's schedule).
-
-    Parameters
-    ----------
-    head_dim:
-        Per-head dimension ``d`` (RoPE rotates ``d/2`` pairs).
-    base:
-        RoPE base frequency (``rope_theta``).
-    scaling:
-        ``rope_scaling`` dict.  For ``llama3`` reads:
-        ``factor``, ``low_freq_factor``, ``high_freq_factor``,
-        ``original_max_position_embeddings``.
-
-    Returns
-    -------
-    np.ndarray, shape ``(head_dim / 2,)``
-        The (possibly rescaled) inverse frequencies, float64.
-    """
-    idx = np.arange(0, head_dim, 2)
-    inv_freqs = np.pow(base, -idx / head_dim)
-
-    if scaling is not None and scaling.get("rope_type", "default") == "llama3":
-        wavelen = np.pi * 2 / inv_freqs
-        O = scaling.get("original_max_position_embeddings")
-        low_freq_factor = scaling.get("low_freq_factor")
-        high_freq_factor = scaling.get("high_freq_factor")
-        scaling_factor = scaling.get("factor")
-
-        low_freq_wavelen = O / low_freq_factor
-        high_freq_wavelen = O / high_freq_factor
-
-        low_freq_idx = wavelen > low_freq_wavelen
-        inv_freqs[low_freq_idx] /= scaling_factor
-        high_freq_idx = wavelen < high_freq_wavelen
-        medium_freq_idx = ~(low_freq_idx | high_freq_idx)
-
-        s = (O / wavelen - low_freq_factor) / \
-            (high_freq_factor - low_freq_factor)
-        inv_freqs[medium_freq_idx] = (1 - s)[medium_freq_idx] * inv_freqs[medium_freq_idx] / \
-            scaling_factor + s[medium_freq_idx] * inv_freqs[medium_freq_idx]
-
-    return inv_freqs
-
-
-
-def rope_from_freqs(
-    x: np.ndarray,
-    positions: np.ndarray,
-    inv_freq: np.ndarray,
-) -> np.ndarray:
-    """Rotate-half RoPE applied with a precomputed ``inv_freq``.
-
-    Identical rotation to 213's ``rope_half`` except the inverse frequencies are
-    supplied (already scaled by ``rope_scaled_freqs``) rather than derived from a
-    ``base``::
-
-        angle = positions[..., None] * inv_freq          # (L, d/2)
-        angle = concat([angle, angle], axis=-1)          # (L, d)
-        out   = x * cos(angle) + rotate_half(x) * sin(angle)
-
-    with ``rotate_half(x) = concat([-x2, x1], axis=-1)`` over the two halves of
-    the last axis.
-
-    Parameters
-    ----------
-    x:
-        Activations whose last axis is ``head_dim``, e.g. ``(B, H, L, head_dim)``.
-    positions:
-        Position indices, shape ``(L,)``.
-    inv_freq:
-        Inverse frequencies, shape ``(head_dim / 2,)``.
-
-    Returns
-    -------
-    np.ndarray
-        ``x`` rotated by RoPE, same shape as ``x``.
-    """
-    a, b = split_halves(x)
-    rotate_half = np.concatenate([-b, a], axis = -1)
-
-    angle = positions[..., None] * inv_freq
-    angle = np.concatenate([angle, angle], axis=-1)
-
-    return x * np.cos(angle) + rotate_half * np.sin(angle)
+from leet_llm import (
+    LlamaConfig,
+    LlamaParams,
+    RopeParams,
+    llama_forward,
+    load_llama,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -243,5 +149,12 @@ def llama31_forward(
         norm_eps=cfg.norm_eps,
         rope_base=cfg.rope_base,
     )
-    # TODO(307): inject scaled rotate-half RoPE for llama3 parity.
-    return llama_forward(input_ids, params, cfg303, start_pos=start_pos)
+    return llama_forward(
+        input_ids,
+        params,
+        cfg303,
+        start_pos=start_pos,
+        rope_params=RopeParams(
+            base=cfg.rope_base, pair_type="half", scaling=cfg.rope_scaling
+        ),
+    )

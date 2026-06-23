@@ -15,7 +15,14 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from leet_llm import AttnParams, SwiGLUParams, rms_norm, rope_half, rope_interleaved, sdpa, swiglu_ffn, add_residual, group_last_axis, affine, triangular_mask, ungroup_last_axis
+from leet_llm import AttnParams, SwiGLUParams, rms_norm, rope_from_freqs, rope_scaled_freqs, sdpa, swiglu_ffn, add_residual, group_last_axis, affine, triangular_mask, ungroup_last_axis
+
+
+@dataclass(frozen=True)
+class RopeParams:
+    base: float = 10000.0
+    pair_type: str = "interleaved"  # "interleaved" | "half"
+    scaling: dict | None = None
 
 
 @dataclass(frozen=True)
@@ -34,7 +41,7 @@ def _rope_gqa(
     n_kv_heads: int,
     positions: np.ndarray,
     mask: np.ndarray | None = None,
-    rope: str = "interleaved",
+    rope_params: RopeParams = RopeParams(),
 ) -> np.ndarray:
     """Grouped-query attention with interleaved RoPE applied to QK"""
     n_g = n_heads // n_kv_heads  # group size
@@ -57,14 +64,11 @@ def _rope_gqa(
     K = K[:, :, None, ...]
     V = V[:, :, None, ...]
 
-    if rope == "interleaved":
-        Q_rope = rope_interleaved(Q, positions)
-        K_rope = rope_interleaved(K, positions)
-    elif rope == "half":
-        Q_rope = rope_half(Q, positions)
-        K_rope = rope_half(K, positions)
-    else:
-        raise ValueError("Invalid rope type (%s).", rope)
+    inv_freqs = rope_scaled_freqs(
+        q_shape[-1], rope_params.base, rope_params.scaling)
+
+    Q_rope = rope_from_freqs(Q, positions, inv_freqs, rope_params.pair_type)
+    K_rope = rope_from_freqs(K, positions, inv_freqs, rope_params.pair_type)
 
     gqa = sdpa(Q_rope, K_rope, V, mask)
     gqa = gqa.reshape(q_shape)
@@ -81,7 +85,7 @@ def llama_decoder_block(
     positions: np.ndarray,
     mask: np.ndarray | None = None,
     eps: float = 1e-5,
-    rope: str = "interleaved",
+    rope_params: RopeParams = RopeParams(),
 ) -> np.ndarray:
     """One pre-norm Llama block: RMSNorm(eps) -> RoPE-GQA -> residual -> RMSNorm(eps) -> SwiGLU -> residual."""
     if mask is None:
@@ -89,7 +93,7 @@ def llama_decoder_block(
         mask = triangular_mask(L)
     a = rms_norm(x, params.attn_norm, eps=eps)
     attn = _rope_gqa(a, params.attn, n_heads,
-                     n_kv_heads, positions, mask, rope)
+                     n_kv_heads, positions, mask, rope_params)
     h = add_residual(x, attn)
     f = rms_norm(h, params.ffn_norm, eps=eps)
     ffn = swiglu_ffn(f, params.ffn)
