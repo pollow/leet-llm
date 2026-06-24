@@ -57,6 +57,6 @@ def mha(
     K = group_last_axis(K, n_heads)
     V = group_last_axis(V, n_heads)
 
-    mha = ungroup_last_axis(sdpa(Q, K, V, mask))
+    mha = ungroup_last_axis(sdpa(Q, K, V, mask)) # [batch_size, seq_len, d_model]
 
     return affine(mha, params.Wo, params.bo)

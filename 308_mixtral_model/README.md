@@ -3,11 +3,11 @@
 ## Description
 
 Mixtral is a Llama-style decoder-only transformer where each layer's feed-forward
-network is replaced by a **sparse mixture-of-experts (MoE)** block.  Instead of a
+network is replaced by a **sparse mixture-of-experts (MoE)** block. Instead of a
 single SwiGLU FFN, each layer holds `num_local_experts` independent SwiGLU expert
 networks plus a small linear *router*.  For each token, the router selects the
 top-`k` experts, renormalises their gate scores, and returns a weighted sum of those
-experts' outputs.  The attention mechanism (GQA, rotate-half RoPE, no QKV bias) is
+experts' outputs. The attention mechanism (GQA, rotate-half RoPE, no QKV bias) is
 identical to Llama/Mistral.
 
 This task introduces one new operator:
