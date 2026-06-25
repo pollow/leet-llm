@@ -32,7 +32,21 @@ import numpy as np
 
 os.environ.setdefault("LEET_LLM_TARGET", "solution")
 
-from leet_llm import AttnParams, LlamaBlockParams, SwiGLUParams, add_residual, affine, embedding, group_last_axis, rms_norm, rope_half, sdpa, swiglu_ffn, triangular_mask, ungroup_last_axis, sample
+from leet_llm import (
+    AttnParams,
+    LlamaBlockParams,
+    SwiGLUParams,
+    add_residual,
+    affine,
+    embedding,
+    group_last_axis,
+    rms_norm,
+    rope_half,
+    sdpa,
+    swiglu_ffn,
+    triangular_mask,
+    ungroup_last_axis,
+)
 
 
 def qk_norm(
@@ -84,7 +98,7 @@ class Qwen3Config:
     n_layers: int
     n_heads: int
     n_kv_heads: int
-    head_dim: int          # explicit in Qwen3 config; NOT necessarily dim // n_heads
+    head_dim: int  # explicit in Qwen3 config; NOT necessarily dim // n_heads
     vocab_size: int
     max_seq_len: int = 4096
     norm_eps: float = 1e-6
@@ -95,6 +109,7 @@ class Qwen3Config:
 @dataclass(frozen=True, kw_only=True)
 class Qwen3AttnParams(AttnParams):
     """Traditional AttnParams with qk_norm weights."""
+
     q_norm: np.ndarray
     k_norm: np.ndarray
 
@@ -102,6 +117,7 @@ class Qwen3AttnParams(AttnParams):
 @dataclass(frozen=True)
 class Qwen3BlockParams:
     """Weights for one Llama decoder block: RoPE-GQA + SwiGLU, two RMSNorms, bias-free."""
+
     attn: Qwen3AttnParams
     ffn: SwiGLUParams
     attn_norm: np.ndarray  # RMSNorm weight (d,)
@@ -110,9 +126,9 @@ class Qwen3BlockParams:
 
 @dataclass(frozen=True)
 class Qwen3Params:
-    tok_embed: np.ndarray           # (V, d)
+    tok_embed: np.ndarray  # (V, d)
     layers: list[Qwen3BlockParams]  # list of per-layer dicts (see load_qwen3)
-    final_norm: np.ndarray          # (d,) RMSNorm weight
+    final_norm: np.ndarray  # (d,) RMSNorm weight
     # (V, d)  [tied: same as tok_embed when tie_word_embeddings=True]
     lm_head: np.ndarray
 
@@ -153,7 +169,16 @@ def load_qwen3(weights: dict, cfg: Qwen3Config) -> Qwen3Params:
         q_norm = weights[f"{prefix}.self_attn.q_norm.weight"]
         k_norm = weights[f"{prefix}.self_attn.k_norm.weight"]
         attn = Qwen3AttnParams(
-            Wq=Wq, Wk=Wk, Wv=Wv, Wo=Wo, bq=None, bk=None, bv=None, bo=None, q_norm=q_norm, k_norm=k_norm
+            Wq=Wq,
+            Wk=Wk,
+            Wv=Wv,
+            Wo=Wo,
+            bq=None,
+            bk=None,
+            bv=None,
+            bo=None,
+            q_norm=q_norm,
+            k_norm=k_norm,
         )
 
         W1 = weights[f"{prefix}.mlp.gate_proj.weight"]  # gate
@@ -162,8 +187,7 @@ def load_qwen3(weights: dict, cfg: Qwen3Config) -> Qwen3Params:
         ffn = SwiGLUParams(W1=W1, W3=W3, W2=W2)
 
         layers.append(
-            LlamaBlockParams(attn=attn, ffn=ffn,
-                             attn_norm=attn_norm, ffn_norm=ffn_norm)
+            LlamaBlockParams(attn=attn, ffn=ffn, attn_norm=attn_norm, ffn_norm=ffn_norm)
         )
 
     return Qwen3Params(
@@ -225,8 +249,9 @@ def qwen3_decoder_block(
         mask = triangular_mask(L)
 
     a = rms_norm(x, params.attn_norm, eps=eps)
-    attn = _rope_gqa_qk_norm(a, params.attn, n_heads,
-                             n_kv_heads, positions, mask, eps, rope_base)
+    attn = _rope_gqa_qk_norm(
+        a, params.attn, n_heads, n_kv_heads, positions, mask, eps, rope_base
+    )
 
     h = add_residual(x, attn)
     f = rms_norm(h, params.ffn_norm, eps=eps)
@@ -258,8 +283,16 @@ def qwen3_forward(
     mask = triangular_mask(L)
 
     for blockParam in params.layers:
-        h = qwen3_decoder_block(h, blockParam, cfg.n_heads, cfg.n_kv_heads,
-                                positions=positions, mask=mask, eps=cfg.norm_eps, rope_base=cfg.rope_base)
+        h = qwen3_decoder_block(
+            h,
+            blockParam,
+            cfg.n_heads,
+            cfg.n_kv_heads,
+            positions=positions,
+            mask=mask,
+            eps=cfg.norm_eps,
+            rope_base=cfg.rope_base,
+        )
 
     h = rms_norm(h, params.final_norm, cfg.norm_eps)
     logits = h @ params.lm_head.T

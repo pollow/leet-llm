@@ -85,7 +85,7 @@ REGISTRY: dict[str, tuple[str, str]] = {
     "gqa": ("215_gqa", "gqa"),
     "llama_decoder_block": ("216_llama_decoder_block", "llama_decoder_block"),
     "LlamaBlockParams": ("216_llama_decoder_block", "LlamaBlockParams"),
-    "RopeParams": ("216_llama_decoder_block", "RopeParams"),
+    "RopeParams": ("215_gqa", "RopeParams"),
     # L3 — Whole-Model & Inference
     "TransformerConfig": ("301_transformer_model", "TransformerConfig"),
     "MarianParams": ("301_transformer_model", "MarianParams"),
