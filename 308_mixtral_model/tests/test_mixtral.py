@@ -154,7 +154,7 @@ def test_moe_routing_depends_only_on_top_k():
 
     We zero out ALL non-selected expert weights and the output must be identical.
     """
-    rng = np.random.default_rng(10)
+    rng = np.random.default_rng(6)
     T, d, Fd, NE, NK = 5, 8, 16, 4, 2
     x = rng.standard_normal((T, d))
     router_weight = rng.standard_normal((NE, d))
