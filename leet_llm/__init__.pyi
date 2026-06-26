@@ -54,6 +54,7 @@ position_ids: Any
 build_batch: Any
 embedding: Any
 gelu: Any
+sigmoid: Any
 silu: Any
 layer_norm: Any
 sinusoidal_pe: Any

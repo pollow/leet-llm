@@ -61,6 +61,7 @@ REGISTRY: dict[str, tuple[str, str]] = {
     # L2 — Operators & Layers
     "embedding": ("201_embedding", "embedding"),
     "gelu": ("202_activations", "gelu"),
+    "sigmoid": ("202_activations", "sigmoid"),
     "silu": ("202_activations", "silu"),
     "layer_norm": ("203_layer_norm", "layer_norm"),
     "sinusoidal_pe": ("204_positional_encoding", "sinusoidal_pe"),

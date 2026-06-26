@@ -4,6 +4,7 @@ AUTHORING ONLY (needs the ``gen`` group):
     uv run --group gen python 202_activations/tests/gen_fixtures.py
 
 Oracle: torch float64 ``F.gelu`` (exact erf form, approximate='none') and ``F.silu``.
+(``sigmoid`` is deterministic from formula and tested analytically.)
 """
 
 from __future__ import annotations
@@ -32,6 +33,7 @@ def main() -> None:
             x=x,
             gelu=F.gelu(xt).numpy(),
             silu=F.silu(xt).numpy(),
+            sigmoid=torch.sigmoid(xt).numpy(),
         )
         print(f"  wrote {name}.npz  x{x.shape}")
 

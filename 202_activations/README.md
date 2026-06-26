@@ -1,19 +1,25 @@
-# 202 — Activations (GELU & SiLU)
+# 202 — Activations (GELU, sigmoid & SiLU)
 
 **Level 2 · Operators & Layers**
 
 ## Description
 
-Between linear layers a transformer applies a smooth, non-linear **activation**. You'll
-build the two that matter for this course: **GELU** (the classic GPT/BERT choice) and
-**SiLU** (a.k.a. swish, the gate inside Llama's SwiGLU). Both are smooth, near-linear for
-large positive inputs, and saturate toward 0 for large negative inputs.
+Between linear layers a transformer applies smooth, non-linear **activations**. In this
+task you'll build three core pieces:
+
+- **sigmoid** (the logistic gate),
+- **SiLU** (a.k.a. swish, defined from sigmoid), and
+- **GELU** (the classic GPT/BERT choice).
+
+All three are smooth; sigmoid saturates to 0/1, while SiLU and GELU are near-linear for
+large positive inputs and near 0 for large negative inputs.
 
 ## The Math
 
 With the standard normal CDF `Φ` and the logistic sigmoid `σ(x) = 1 / (1 + e^{−x})`:
 
 ```
+sigmoid(x) = σ(x) = 1 / (1 + e^{-x})
 GELU(x) = x · Φ(x) = x · ½ · (1 + erf(x / √2))      # exact form
 SiLU(x) = x · σ(x)
 ```
@@ -44,6 +50,7 @@ over ReLU:
 
 ```python
 def gelu(x: np.ndarray) -> np.ndarray: ...
+def sigmoid(x: np.ndarray) -> np.ndarray: ...
 def silu(x: np.ndarray) -> np.ndarray: ...
 ```
 

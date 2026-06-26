@@ -1,6 +1,6 @@
-"""202 — Activations (GELU & SiLU).
+"""202 — Activations (GELU, sigmoid & SiLU).
 
-Implement ``gelu`` and ``silu``. See README.md for the full explanation.
+Implement ``gelu``, ``sigmoid`` and ``silu``. See README.md for details.
 Run `uv run grade 202` to check your work.
 """
 
@@ -15,7 +15,11 @@ def gelu(x: np.ndarray) -> np.ndarray:
     return x * 0.5 * (1 + erf(x / np.sqrt(2)))
 
 
+def sigmoid(x: np.ndarray) -> np.ndarray:
+    """Logistic sigmoid: ``1 / (1 + exp(-x))``."""
+    return 1.0 / (1.0 + np.exp(-x))
+
+
 def silu(x: np.ndarray) -> np.ndarray:
     """SiLU / swish: ``x · sigmoid(x)``."""
-    sig = 1 / (1 + np.exp(-x))
-    return x * sig
+    return x * sigmoid(x)
