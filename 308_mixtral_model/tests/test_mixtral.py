@@ -43,13 +43,15 @@ def _softmax_np(x: np.ndarray, axis: int = -1) -> np.ndarray:
 def _moe_oracle(x_np, router_weight_np, gate_up_proj_np, down_proj_np, top_k):
     """Float64 reference MoE FFN.
 
-    x_np: (T, d)
+    x_np: (..., d)
     router_weight_np: (num_experts, d)
     gate_up_proj_np: (num_experts, 2*Fd, d)
     down_proj_np: (num_experts, d, Fd)
-    Returns: (T, d)
+    Returns: same shape as x_np
     """
-    x = x_np.astype(np.float64)
+    x_shape = x_np.shape
+    d_model = x_shape[-1]
+    x = x_np.astype(np.float64).reshape(-1, d_model)
     router_weight = router_weight_np.astype(np.float64)
     gate_up = gate_up_proj_np.astype(np.float64)
     down = down_proj_np.astype(np.float64)
@@ -78,7 +80,7 @@ def _moe_oracle(x_np, router_weight_np, gate_up_proj_np, down_proj_np, top_k):
             y = h @ down[e].T                               # (d,)
             out[t] += weights[t, k] * y
 
-    return out
+    return out.reshape(x_shape)
 
 
 # Retrieve SwiGLUParams from leet_llm for constructing fake experts
@@ -113,8 +115,8 @@ def _make_fake_experts(gate_up_proj_np, down_proj_np):
 def test_moe_ffn_matches_oracle():
     """moe_ffn must match the float64 reference MoE oracle on a small input."""
     rng = np.random.default_rng(7)
-    T, d, Fd, NE, NK = 6, 8, 16, 4, 2
-    x = rng.standard_normal((T, d))
+    B, L, d, Fd, NE, NK = 2, 3, 8, 16, 4, 2
+    x = rng.standard_normal((B, L, d))
     router_weight = rng.standard_normal((NE, d))
     gate_up_proj = rng.standard_normal((NE, 2 * Fd, d))
     down_proj = rng.standard_normal((NE, d, Fd))
@@ -133,7 +135,7 @@ def test_moe_ffn_shape():
     """moe_ffn output shape must equal input shape."""
     rng = np.random.default_rng(8)
     B, L, d, Fd, NE, NK = 2, 4, 8, 16, 4, 2
-    x = rng.standard_normal((B * L, d))
+    x = rng.standard_normal((B, L, d))
     router_weight = rng.standard_normal((NE, d))
     gate_up_proj = rng.standard_normal((NE, 2 * Fd, d))
     down_proj = rng.standard_normal((NE, d, Fd))
@@ -141,6 +143,26 @@ def test_moe_ffn_shape():
     experts = _make_fake_experts(gate_up_proj, down_proj)
     out = moe_ffn(x, router_weight, experts, NK)
     assert out.shape == x.shape
+
+
+@pytest.mark.skipif(not _HAS_SWIGLU, reason="SwiGLUParams not available")
+def test_moe_ffn_bld_and_td_equivalent():
+    """(B, L, d) and flattened (T, d) inputs should produce identical token outputs."""
+    rng = np.random.default_rng(81)
+    B, L, d, Fd, NE, NK = 2, 5, 8, 16, 4, 2
+    x_bld = rng.standard_normal((B, L, d))
+    x_td = x_bld.reshape(-1, d).copy()
+    router_weight = rng.standard_normal((NE, d))
+    gate_up_proj = rng.standard_normal((NE, 2 * Fd, d))
+    down_proj = rng.standard_normal((NE, d, Fd))
+
+    experts = _make_fake_experts(gate_up_proj, down_proj)
+    out_bld = moe_ffn(x_bld, router_weight, experts, NK)
+    out_td = moe_ffn(x_td, router_weight, experts, NK)
+
+    assert out_bld.shape == x_bld.shape
+    assert out_td.shape == x_td.shape
+    np.testing.assert_allclose(out_bld.reshape(-1, d), out_td, rtol=1e-9, atol=0)
 
 
 # ---------------------------------------------------------------------------
@@ -155,8 +177,9 @@ def test_moe_routing_depends_only_on_top_k():
     We zero out ALL non-selected expert weights and the output must be identical.
     """
     rng = np.random.default_rng(6)
-    T, d, Fd, NE, NK = 5, 8, 16, 4, 2
-    x = rng.standard_normal((T, d))
+    B, L, d, Fd, NE, NK = 1, 5, 8, 16, 4, 2
+    x = rng.standard_normal((B, L, d))
+    x_flat = x.reshape(-1, d)
     router_weight = rng.standard_normal((NE, d))
     gate_up_proj = rng.standard_normal((NE, 2 * Fd, d))
     down_proj = rng.standard_normal((NE, d, Fd))
@@ -165,9 +188,9 @@ def test_moe_routing_depends_only_on_top_k():
     out_orig = moe_ffn(x.copy(), router_weight, experts_orig, NK)
 
     # Determine which experts are selected for each token
-    logits = x @ router_weight.T
+    logits = x_flat @ router_weight.T
     probs = _softmax_np(logits, axis=-1)
-    idx = np.argsort(probs, axis=-1)[:, ::-1][:, :NK]    # (T, NK) selected experts
+    idx = np.argsort(probs, axis=-1)[:, ::-1][:, :NK]
     selected_experts = set(idx.flatten().tolist())
     all_experts = set(range(NE))
     non_selected = all_experts - selected_experts
@@ -195,8 +218,9 @@ def test_moe_routing_depends_only_on_top_k():
 def test_moe_non_selected_expert_is_noop():
     """Zeroing a specific non-selected expert's weights must not change the output."""
     rng = np.random.default_rng(11)
-    T, d, Fd, NE, NK = 4, 8, 16, 4, 2
-    x = rng.standard_normal((T, d))
+    B, L, d, Fd, NE, NK = 1, 4, 8, 16, 4, 2
+    x = rng.standard_normal((B, L, d))
+    x_flat = x.reshape(-1, d)
     router_weight = rng.standard_normal((NE, d))
     gate_up_proj = rng.standard_normal((NE, 2 * Fd, d))
     down_proj = rng.standard_normal((NE, d, Fd))
@@ -205,7 +229,7 @@ def test_moe_non_selected_expert_is_noop():
     out_orig = moe_ffn(x.copy(), router_weight, experts_orig, NK)
 
     # Find at least one token where expert 0 is NOT selected
-    logits = x @ router_weight.T
+    logits = x_flat @ router_weight.T
     probs = _softmax_np(logits, axis=-1)
     idx = np.argsort(probs, axis=-1)[:, ::-1][:, :NK]
 
@@ -243,8 +267,9 @@ def test_moe_gate_weights_sum_to_one():
     student's routing rather than testing numpy against itself.
     """
     rng = np.random.default_rng(12)
-    T, d, Fd, NE, NK = 7, 8, 16, 4, 2
-    x = rng.standard_normal((T, d))
+    B, L, d, Fd, NE, NK = 1, 7, 8, 16, 4, 2
+    x = rng.standard_normal((B, L, d))
+    x_flat = x.reshape(-1, d)
     router_weight = rng.standard_normal((NE, d))
 
     # All experts share one weight set.
@@ -257,10 +282,10 @@ def test_moe_gate_weights_sum_to_one():
     out = moe_ffn(x, router_weight, experts, NK)
 
     # Single shared-expert SwiGLU (float64); equals moe_ffn iff gate weights sum to 1.
-    gu = x @ gate_up_one.T                       # (T, 2*Fd)
+    gu = x_flat @ gate_up_one.T                  # (T, 2*Fd)
     gate_v, up_v = gu[:, :Fd], gu[:, Fd:]
     h = (gate_v / (1 + np.exp(-gate_v))) * up_v  # SiLU gate * up
-    ref = h @ down_one.T                          # (T, d)
+    ref = (h @ down_one.T).reshape(x.shape)
 
     np.testing.assert_allclose(
         out, ref, rtol=1e-9, atol=0,

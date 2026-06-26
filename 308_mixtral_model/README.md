@@ -20,11 +20,12 @@ Everything else composes L2 primitives you have already built.
 
 ### Router and top-k gating
 
-Let `x ∈ R^(T, d)` be the flattened token activations (B×L tokens, each of dim d),
-and `W_r ∈ R^(E, d)` be the router weight matrix (`E` = `num_local_experts`).
+Let `x ∈ R^(B, L, d)` be token activations. Flatten to
+`x_flat = reshape(x, (T, d))` with `T = B·L`, and let
+`W_r ∈ R^(E, d)` be the router weight matrix (`E` = `num_local_experts`).
 
 ```
-router_logits   = x @ W_r.T              # (T, E)
+router_logits   = x_flat @ W_r.T         # (T, E)
 routing_weights = softmax(router_logits) # softmax over ALL E experts
 weights, idx    = top_k(routing_weights, k=num_experts_per_tok)
                                          # weights: (T, k),  idx: (T, k)
@@ -80,11 +81,11 @@ logits = h @ lm_head.T
 
 ```python
 def moe_ffn(
-    x: np.ndarray,              # (T, d) tokens × dim
+    x: np.ndarray,              # (B, L, d) preferred; (T, d) also works
     router_weight: np.ndarray,  # (num_experts, d)
     experts: list,              # list[SwiGLUParams], length num_experts
     num_active_experts: int,
-) -> np.ndarray:                # (T, d) same shape as x
+) -> np.ndarray:                # same shape as x
 ```
 
 ```python

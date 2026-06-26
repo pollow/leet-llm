@@ -58,7 +58,9 @@ def moe_ffn(
     Parameters
     ----------
     x:
-        Input activations, shape ``(B, L, d)`` or ``(T, d)`` (tokens × dim).
+        Input activations, shape ``(B, L, d)``.
+        Internally flattened to token-major ``(T, d)`` for routing, so passing
+        pre-flattened ``(T, d)`` also works and is returned in the same shape.
     router_weight:
         Router linear weight, shape ``(num_experts, d)``.
         ``router_logits = x @ router_weight.T``.

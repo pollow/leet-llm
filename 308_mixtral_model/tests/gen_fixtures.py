@@ -82,7 +82,7 @@ def _moe_ffn_torch(
 ) -> torch.Tensor:
     """Sparse MoE FFN matching the genuine MixtralSparseMoeBlock convention.
 
-    x: (T, d) where T = B*L (tokens)
+    x: (T, d), typically from flattening decoder activations (B, L, d)
     router_weight: (num_experts, d)   — mlp.gate.weight
     gate_up_proj: (num_experts, 2*Fd, d)
     down_proj: (num_experts, d, Fd)
@@ -170,7 +170,7 @@ def _composed_oracle(W: dict, T: dict, ids: np.ndarray) -> np.ndarray:
         f_norm = F.rms_norm(h, (d,), weight=T[f"{p}.post_attention_layernorm.weight"], eps=EPS)
 
         # Sparse MoE FFN
-        # Flatten to (T, d) for token-level routing
+        # MoE is token-wise; flatten (B, L, d) -> (T, d) for routing
         f_flat = f_norm.reshape(-1, d)    # (L, d) for B=1
         moe_out = _moe_ffn_torch(
             f_flat,
