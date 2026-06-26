@@ -122,7 +122,7 @@ def _sigmoid(x: np.ndarray) -> np.ndarray:
 
 
 def _moe(x, rw, rb, gup, gub, dp, db):
-    """GPT-OSS MoE on x (T, d), float64."""
+    """GPT-OSS MoE on flattened tokens x (T, d), float64."""
     x = x.astype(np.float64)
     T = x.shape[0]
     logits = x @ rw.T + rb            # (T, E)
@@ -197,6 +197,7 @@ def _composed_oracle_np(W: dict, ids: np.ndarray) -> np.ndarray:
         h = h + attn
 
         f_in = _rms_norm(h, W[f"{p}.post_attention_layernorm.weight"], EPS)
+        # MoE is token-wise; flatten (B, L, d) -> (T, d) for routing.
         moe = _moe(
             f_in.reshape(-1, d),
             W[f"{p}.mlp.router.weight"].astype(np.float64),

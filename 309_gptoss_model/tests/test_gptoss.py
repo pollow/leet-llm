@@ -4,7 +4,7 @@ Categories:
   1. Operator unit tests:
      - ``attention_with_sinks`` vs a float64 oracle; sink invariants
        (rows sum to ``1 - sink_mass < 1``; ``sink_logits=-inf`` recovers plain softmax;
-       the additive mask is respected).
+      pre-masked scores are respected).
      - ``gptoss_moe_ffn`` vs a float64 oracle; routing invariants (depends only on the
        selected top-k; zeroing a non-selected expert is a no-op; the selected gate
        scores sum to 1; the gate/up pre-activations are clamped).
@@ -85,10 +85,8 @@ def _yarn_inv_freq_reference(head_dim: int, base: float, sc: dict) -> np.ndarray
     return interp * (1.0 - extrap_factor) + extrap * extrap_factor
 
 
-def _sinks_oracle(scores, sink_logits, mask=None):
+def _sinks_oracle(scores, sink_logits):
     s = scores.astype(np.float64)
-    if mask is not None:
-        s = s + mask
     B, Hh, L, _ = s.shape
     sink = np.asarray(sink_logits, np.float64).reshape(1, Hh, 1, 1)
     sink = np.broadcast_to(sink, (B, Hh, L, 1))
@@ -97,7 +95,9 @@ def _sinks_oracle(scores, sink_logits, mask=None):
 
 
 def _moe_oracle(x, rw, rb, gup, gub, dp, db, top_k):
-    x = x.astype(np.float64)
+    x_shape = x.shape
+    d_model = x_shape[-1]
+    x = x.astype(np.float64).reshape(-1, d_model)
     T = x.shape[0]
     logits = x @ rw.T + rb
     idx = np.argsort(logits, axis=-1)[:, ::-1][:, :top_k]
@@ -113,7 +113,7 @@ def _moe_oracle(x, rw, rb, gup, gub, dp, db, top_k):
             glu = gate * _sigmoid(gate * ALPHA)
             gated = (up + 1.0) * glu
             out[t] += scores[t, j] * (gated @ dp[e] + db[e])
-    return out
+    return out.reshape(x_shape)
 
 
 # ---------------------------------------------------------------------------
@@ -154,14 +154,17 @@ def test_sinks_neg_inf_recovers_plain_softmax():
 
 
 def test_sinks_respects_mask():
-    """An additive -inf mask zeroes those attention entries."""
+    """A pre-applied -inf mask zeroes those attention entries."""
     rng = np.random.default_rng(4)
     L = 4
     scores = rng.standard_normal((1, 2, L, L))
     rows = np.arange(L)[:, None]
     cols = np.arange(L)[None, :]
     mask = np.where(rows >= cols, 0.0, -np.inf)   # causal
-    out = attention_with_sinks(scores, np.zeros(2), mask=mask)
+    masked_scores = scores + mask
+    out = attention_with_sinks(masked_scores, np.zeros(2))
+    ref = _sinks_oracle(masked_scores, np.zeros(2))
+    np.testing.assert_allclose(out, ref, rtol=1e-9, atol=0)
     # upper triangle (future) must be exactly zero
     fut = np.triu(np.ones((L, L), bool), k=1)
     assert np.all(out[:, :, fut] == 0.0)
@@ -171,9 +174,9 @@ def test_sinks_respects_mask():
 # 1b. gptoss_moe_ffn
 # ---------------------------------------------------------------------------
 
-def _rand_moe(rng, T, d, F, E):
+def _rand_moe(rng, B, L, d, F, E):
     return dict(
-        x=rng.standard_normal((T, d)),
+        x=rng.standard_normal((B, L, d)),
         rw=rng.standard_normal((E, d)),
         rb=rng.standard_normal((E,)),
         gup=rng.standard_normal((E, d, 2 * F)),
@@ -185,21 +188,36 @@ def _rand_moe(rng, T, d, F, E):
 
 def test_moe_matches_oracle():
     rng = np.random.default_rng(5)
-    p = _rand_moe(rng, T=6, d=8, F=16, E=4)
+    p = _rand_moe(rng, B=2, L=3, d=8, F=16, E=4)
     out = gptoss_moe_ffn(p["x"], p["rw"], p["rb"], p["gup"], p["gub"], p["dp"], p["db"], 2)
     ref = _moe_oracle(p["x"], p["rw"], p["rb"], p["gup"], p["gub"], p["dp"], p["db"], 2)
     assert out.shape == p["x"].shape
     np.testing.assert_allclose(out, ref, rtol=1e-9, atol=0)
 
 
+def test_moe_bld_and_td_equivalent():
+    """(B, L, d) and flattened (T, d) inputs should produce identical token outputs."""
+    rng = np.random.default_rng(51)
+    B, L, d, F, E, K = 2, 4, 8, 16, 4, 2
+    p = _rand_moe(rng, B, L, d, F, E)
+    x_td = p["x"].reshape(-1, d).copy()
+
+    out_bld = gptoss_moe_ffn(p["x"], p["rw"], p["rb"], p["gup"], p["gub"], p["dp"], p["db"], K)
+    out_td = gptoss_moe_ffn(x_td, p["rw"], p["rb"], p["gup"], p["gub"], p["dp"], p["db"], K)
+
+    assert out_bld.shape == p["x"].shape
+    assert out_td.shape == x_td.shape
+    np.testing.assert_allclose(out_bld.reshape(-1, d), out_td, rtol=1e-9, atol=0)
+
+
 def test_moe_routing_depends_only_on_top_k():
     """Zeroing every non-selected expert's weights must not change the output."""
     rng = np.random.default_rng(0)
-    T, d, F, E, K = 4, 8, 16, 6, 2   # E>T*K so some expert is reliably non-selected
-    p = _rand_moe(rng, T, d, F, E)
+    B, L, d, F, E, K = 1, 4, 8, 16, 6, 2   # E>(B*L)*K so some expert is reliably non-selected
+    p = _rand_moe(rng, B, L, d, F, E)
     out = gptoss_moe_ffn(p["x"], p["rw"], p["rb"], p["gup"], p["gub"], p["dp"], p["db"], K)
 
-    logits = p["x"] @ p["rw"].T + p["rb"]
+    logits = p["x"].reshape(-1, d) @ p["rw"].T + p["rb"]
     idx = np.argsort(logits, axis=-1)[:, ::-1][:, :K]
     selected = set(idx.flatten().tolist())
     non_selected = set(range(E)) - selected
@@ -224,8 +242,9 @@ def test_moe_gate_scores_sum_to_one():
     exactly — observed THROUGH gptoss_moe_ffn (not recomputed against itself).
     """
     rng = np.random.default_rng(7)
-    T, d, F, E, K = 7, 8, 16, 4, 2
-    x = rng.standard_normal((T, d))
+    B, L, d, F, E, K = 1, 7, 8, 16, 4, 2
+    x = rng.standard_normal((B, L, d))
+    x_flat = x.reshape(-1, d)
     rw = rng.standard_normal((E, d))
     rb = rng.standard_normal((E,))
     gup_one = rng.standard_normal((d, 2 * F))
@@ -239,11 +258,11 @@ def test_moe_gate_scores_sum_to_one():
 
     out = gptoss_moe_ffn(x, rw, rb, gup, gub, dp, db, K)
 
-    gate_up = x @ gup_one + gub_one
+    gate_up = x_flat @ gup_one + gub_one
     gate = np.minimum(gate_up[:, ::2], LIMIT)
     up = np.clip(gate_up[:, 1::2], -LIMIT, LIMIT)
     glu = gate * _sigmoid(gate * ALPHA)
-    ref = ((up + 1.0) * glu) @ dp_one + db_one
+    ref = (((up + 1.0) * glu) @ dp_one + db_one).reshape(x.shape)
     np.testing.assert_allclose(out, ref, rtol=1e-9, atol=0,
                                err_msg="selected gate scores don't sum to 1")
 
@@ -255,8 +274,8 @@ def test_moe_clamps_preactivations():
     implementation) saturates, while an unclamped GLU would blow up. We compare
     against the clamped oracle for a single-expert (top_k=1) routed token.
     """
-    d, F, E = 4, 3, 1
-    x = np.ones((1, d))
+    B, L, d, F, E = 1, 1, 4, 3, 1
+    x = np.ones((B, L, d))
     rw = np.zeros((E, d))                              # one expert, trivial router
     rb = np.zeros((E,))
     gup = np.full((E, d, 2 * F), 50.0)                 # x@gup ≈ 200 ≫ limit

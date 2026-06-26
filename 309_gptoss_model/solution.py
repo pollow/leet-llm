@@ -46,7 +46,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from leet_llm import deinterleave, softmax, top_k
+from leet_llm import deinterleave, sigmoid, softmax, top_k
 
 
 def attention_with_sinks(
@@ -141,14 +141,14 @@ def gptoss_moe_ffn(
     T = x.shape[0]
 
     for t in range(T):
-        for k in idx[t]:
+        for j, k in enumerate(idx[t]):
             gate_up = x[t] @ gate_up_proj[k] + gate_up_bias[k]
             gate, up = deinterleave(gate_up)
             gate = np.minimum(gate, limit)
             up = np.clip(up, -limit, limit)
-            glu = gate * np.sigmoid(alpha * gate)
+            glu = gate * sigmoid(alpha * gate)
             gated = (up + 1) * glu
-            out[t] += (gated @ down_proj[k] + down_bias[k]) * weights[t, k]
+            out[t] += (gated @ down_proj[k] + down_bias[k]) * weights[t, j]
 
     return out.reshape(x_shape)
 

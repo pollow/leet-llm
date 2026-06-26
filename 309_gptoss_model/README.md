@@ -50,16 +50,15 @@ Add a learned sink channel so each attention row can route part of its mass outs
 
 #### What
 
-- Input: `scores` shape `(B, H, L, L)`, optional additive mask, `sink_logits` shape `(H,)`.
+- Input: `scores` shape `(B, H, L, L)` with layer mask already applied, `sink_logits` shape `(H,)`.
 - Output: `(B, H, L, L)`; row sums are `< 1` when sink logits are finite.
 
 #### How
 
-1. Apply additive mask to `scores` if present.
-2. Broadcast sink logits to `(B, H, L, 1)`.
-3. Concatenate as an extra last-axis column -> `(B, H, L, L+1)`.
-4. Run softmax over the last axis.
-5. Drop the sink column and return the remaining `L` columns.
+1. Broadcast sink logits to `(B, H, L, 1)`.
+2. Concatenate as an extra last-axis column -> `(B, H, L, L+1)`.
+3. Run softmax over the last axis.
+4. Drop the sink column and return the remaining `L` columns.
 
 #### Check before continuing
 
@@ -78,8 +77,9 @@ GPT-OSS does not reuse Mixtral routing unchanged; it defines a different routing
 In Mixtral-style routing, scores are normalized over all experts, then truncated and renormalized.  
 In GPT-OSS, routing weights are computed only from selected experts: top-k logits first, softmax over selected logits second.
 
-GPT-OSS also includes router/expert biases and clamps key activation paths in the expert computation.  
-For this task, treat those choices as required reference behavior, not optional tuning.
+GPT-OSS also includes router/expert biases and clamps the expert pre-activation path.  The bias terms (`router_bias`, `gate_up_bias`, `down_bias`) give each expert a learnable offset/prior, so sparse routing is less brittle when token activations are weak or shifted. The clamp terms control the multiplicative expert path `(up + 1) * gate * sigmoid(alpha * gate)`, so rare large pre-activations cannot dominate one expert's contribution. Together, bias + clamp trade a small amount of simplicity for better routing calibration and output stability.
+
+These are not cosmetic details; they change routing stability and expert output scale.
 
 #### Purpose
 
@@ -88,14 +88,18 @@ Match GPT-OSS sparse routing behavior (router bias, selected-topk softmax, inter
 #### What
 
 Token-wise sparse expert routing with GPT-OSS-specific routing and expert math.
+Use `(B, L, d)` activations as the primary interface, then flatten to `(T, d)`
+internally (`T = B*L`) before token-wise routing.
 
 #### How
 
-1. Router logits with bias:
-   - `router_logits = x @ router_weight.T + router_bias`
-2. Select top-k logits and indices.
-3. Softmax only over selected top-k logits (not over all experts).
-4. For each selected expert:
+1. Flatten token axis:
+   - `x_flat = reshape(x, (-1, d))`
+2. Router logits with bias:
+   - `router_logits = x_flat @ router_weight.T + router_bias`
+3. Select top-k logits and indices.
+4. Softmax only over selected top-k logits (not over all experts).
+5. For each selected expert:
    - `gate_up = x_t @ gate_up_proj[e] + gate_up_bias[e]` (no transpose)
    - split interleaved:
      - `gate = gate_up[::2]`
@@ -108,7 +112,8 @@ Token-wise sparse expert routing with GPT-OSS-specific routing and expert math.
      - `gated = (up + 1) * glu`
    - down projection:
      - `out_e = gated @ down_proj[e] + down_bias[e]`
-5. Compute the weighted sum of selected experts using top-k softmax scores.
+6. Compute the weighted sum of selected experts using top-k softmax scores.
+7. Reshape back to the original `x` shape.
 
 #### Check before continuing
 
@@ -121,9 +126,7 @@ Token-wise sparse expert routing with GPT-OSS-specific routing and expert math.
 
 ### 4) Step C: YaRN explained and wired (core theory section)
 
-- Implement reusable YaRN primitives in `213` (`rope_scaled_freqs`, `rope_attention_scale`).
-- Return to `309` and wire those primitives through the `213/215` interfaces.
-- Do not duplicate RoPE/YaRN directly inside `309` forward. Keep RoPE logic reusable at the primitive layer.
+This section gives the exact YaRN formulas you need. First implement `rope_scaled_freqs` and `rope_attention_scale` in `213`, then return to `309` and wire them into the existing RoPE/GQA path.
 
 #### Why add this?
 
@@ -151,15 +154,43 @@ RoPE rotates q/k pairs by `theta`, converting absolute position into relative ph
 When context length extends far beyond pretraining range, the default frequency progression can produce poor long-distance phase behavior.  
 A scaled schedule is needed to preserve useful positional behavior at both short and long ranges.
 
-#### 4.3 YaRN frequency schedule intuition
+#### 4.3 YaRN `inv_freq` exact formula
 
-YaRN blends two regimes:
+Given:
 
-- **extrapolation-like branch** (original frequencies),
-- **interpolation-like branch** (frequencies divided by scaling factor).
+- `d = head_dim`
+- `base = rope_base`
+- `factor = scaling["factor"]`
+- `old = scaling["original_max_position_embeddings"]`
+- `beta_fast = scaling.get("beta_fast", 32.0)`
+- `beta_slow = scaling.get("beta_slow", 1.0)`
+- `truncate = scaling.get("truncate", True)`
 
-A ramp between low/high rotation bands determines each pair's blend between these branches.  
-In code, this is the `rope_scaled_freqs(..., scaling={"rope_type": "yarn", ...})` path.
+First compute baseline frequencies:
+
+- `pos_freqs[i] = base^(2i/d)`, for `i = 0..d/2-1`
+- `extrap[i] = 1 / pos_freqs[i]` (original branch)
+- `interp[i] = 1 / (factor * pos_freqs[i])` (scaled branch)
+
+Then compute YaRN transition band:
+
+- `low  = (d * ln(old / (beta_fast * 2pi))) / (2 * ln(base))`
+- `high = (d * ln(old / (beta_slow * 2pi))) / (2 * ln(base))`
+- if `truncate`: `low = floor(low)`, `high = ceil(high)`
+- clamp bounds: `low = max(low, 0)`, `high = min(high, d - 1)`
+- if `low == high`, nudge `high += 1e-3` to avoid divide-by-zero
+
+Blend weights by pair index:
+
+- `ramp[i] = clip((i - low) / (high - low), 0, 1)`
+- `extrap_factor[i] = 1 - ramp[i]`
+- `inv_freq[i] = interp[i] * (1 - extrap_factor[i]) + extrap[i] * extrap_factor[i]`
+
+Interpretation:
+
+- lower-index pairs use more original frequencies;
+- higher-index pairs use more scaled frequencies;
+- middle band is smoothly blended.
 
 #### 4.4 Why YaRN also has attention scale
 
@@ -170,7 +201,12 @@ GPT-OSS YaRN includes an additional scalar:
 In this repo's GPT-OSS wiring, both q and k are multiplied by `af` after RoPE.  
 That scaling adjusts effective attention temperature under the YaRN frequency regime and is part of the reference behavior expected by tests.
 
-#### 4.5 Exact implementation surface across tasks
+For GPT-OSS YaRN here, compute:
+
+- if `factor > 1`: `af = 0.1 * ln(factor) + 1.0`
+- else: `af = 1.0`
+
+#### 4.5 Implementation recipe across tasks
 
 - Task 213 owns reusable primitives:
   - `rope_scaled_freqs`
@@ -182,6 +218,13 @@ That scaling adjusts effective attention temperature under the YaRN frequency re
   - `af = rope_attention_scale(cfg.rope_scaling)`
   - `q = rope_from_freqs(q, positions, inv_freq, pair_type="half") * af`
   - `k = rope_from_freqs(k, positions, inv_freq, pair_type="half") * af`
+
+Implementation order:
+
+1. In `213`, implement `rope_scaled_freqs(..., rope_type="yarn")` with the formula above.
+2. In `213`, implement `rope_attention_scale` with the YaRN scale formula above.
+3. In `215/309`, ensure q/k RoPE path accepts scaled `inv_freq` and multiplies by `af`.
+4. Verify `rope_scaling=None` reverts to default RoPE behavior.
 
 #### Check before continuing
 
@@ -227,7 +270,7 @@ Per layer:
 7. mask selection:
    - even layer index -> sliding-window mask
    - odd layer index -> full causal mask
-8. `attention_with_sinks`
+8. `attention_with_sinks` on the pre-masked scores
 9. weighted value aggregation + o projection with bias
 10. first residual add
 11. post-attn norm
