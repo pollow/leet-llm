@@ -3,6 +3,9 @@
 Implement ``llama_decoder_block`` (and the ``LlamaBlockParams`` container). See README.md.
 Run `uv run grade 216` to check your work.
 
+Requirement: extend your task-215 GQA with RoPE and use that extended attention here,
+rather than writing a separate attention algorithm from scratch.
+
 Hint: reuse ``from leet_llm import rms_norm, rope_interleaved, sdpa, swiglu_ffn,
 add_residual, group_last_axis, affine, triangular_mask, AttnParams, SwiGLUParams``. Apply
 RoPE (interleaved convention, as L3 uses) to the per-head q/k projections before the

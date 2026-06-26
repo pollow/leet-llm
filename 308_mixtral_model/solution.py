@@ -24,16 +24,18 @@ Hints:
 
 from __future__ import annotations
 
-from leet_llm import embedding
-from leet_llm import top_k
-from leet_llm import softmax
-from leet_llm import swiglu_ffn
-from leet_llm import add_residual
-from leet_llm import rms_norm
-from leet_llm import triangular_mask
-from leet_llm import RopeParams
-from leet_llm import SwiGLUParams
-from leet_llm import gqa
+from leet_llm import (
+    RopeParams,
+    SwiGLUParams,
+    add_residual,
+    embedding,
+    gqa,
+    rms_norm,
+    softmax,
+    swiglu_ffn,
+    top_k,
+    triangular_mask,
+)
 
 from dataclasses import dataclass
 

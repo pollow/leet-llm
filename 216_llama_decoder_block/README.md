@@ -21,8 +21,12 @@ h   = x + attn                                  # residual
 y   = h + SwiGLU( RMSNorm(h, w_ffn) )           # residual
 ```
 
+Implementation requirement: **extend your task-215 `gqa` implementation with RoPE** (interleaved
+convention), and use that RoPE-augmented GQA inside this block. Do not write a separate
+attention algorithm from scratch for this task.
+
 RoPE is applied to the per-head query and key projections *inside* the attention, after
-projection and before the scores — that's why it's wired here rather than baked into `gqa`.
+projection and before the scores.
 
 ## Function Signature
 
@@ -47,6 +51,8 @@ def llama_decoder_block(x: np.ndarray, params: LlamaBlockParams, n_heads: int,
 
 - *Llama 2*, Touvron et al. 2023: https://arxiv.org/abs/2307.09288
 - *Llama 3*, Grattafiori et al. 2024: https://arxiv.org/abs/2407.21783
+- Required composition: start from `215_gqa`, add interleaved RoPE on q/k, then use that
+  extended attention inside `llama_decoder_block`.
 - Reuse `from leet_llm import rms_norm, rope_interleaved, sdpa, swiglu_ffn, add_residual,
   group_last_axis, affine, triangular_mask, AttnParams, SwiGLUParams`. (RoPE uses the
   **interleaved** convention here, matching the L3 capstone.)
