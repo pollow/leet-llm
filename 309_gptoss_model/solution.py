@@ -2,7 +2,7 @@
 
 Two new delta operators plus the full GPT-OSS decoder assembly:
 
-1. ``attention_with_sinks(scores, sink_logits, mask=None)`` — softmax with one
+1. ``attention_with_sinks(scores, sink_logits)`` — softmax with one
    extra learned per-head "sink" logit in the denominator, then drop the sink
    column so the returned attention rows sum to ``< 1``.
 2. ``gptoss_moe_ffn(...)`` — GPT-OSS's sparse mixture-of-experts FFN.  It is NOT
@@ -16,28 +16,28 @@ Two new delta operators plus the full GPT-OSS decoder assembly:
 See README.md. Run ``uv run grade 309`` to check your work.
 
 Hints:
-- ``attention_with_sinks``: reuse ``from leet_llm import softmax`` (005). Append the
-  per-head ``sink_logits`` as one extra column to ``scores`` (+ ``mask`` if given),
-  softmax over the widened last axis, then return everything except the sink column.
+- ``attention_with_sinks``: reuse ``from leet_llm import softmax`` (005). Expect
+  ``scores`` to be pre-masked, append per-head ``sink_logits`` as one extra
+  column, softmax over the widened last axis, then return everything except the
+  sink column.
 - ``gptoss_moe_ffn``: reuse ``top_k`` (007) and ``softmax`` (005). Route each token to
   its top-k experts, softmax the selected logits, and accumulate the weighted clamped-GLU
   expert outputs.  GPT-OSS stores expert weights as ``x @ gate_up_proj[e]`` and
   ``gated @ down_proj[e]`` (no transpose), with gate = even cols, up = odd cols.
 - ``gptoss_forward``: compose ``embedding`` (201) → per layer [``rms_norm`` (212) →
   q/k/v ``affine`` (003, WITH bias) + ``group_last_axis`` (001) → YaRN RoPE on q & k →
-  repeat-kv + scores ``* head_dim**-0.5`` → ``attention_with_sinks`` with the
-  layer's causal/sliding mask → ``@ v`` → merge + o_proj (WITH bias) → ``add_residual``
+  repeat-kv + scores ``* head_dim**-0.5`` + layer mask → ``attention_with_sinks``
+  → ``@ v`` → merge + o_proj (WITH bias) → ``add_residual``
   (208) → ``rms_norm`` → ``gptoss_moe_ffn`` → residual] → final ``rms_norm`` →
   ``@ lm_head.T``.  Even layers (0, 2, …) use ``sliding_window_mask`` (305); odd layers
   use full causal.
-- **YaRN RoPE (implemented in 213/215, consumed here):** GPT-OSS's real RoPE is
-  YaRN long-context scaling.
-  Compute ``inv_freq = rope_scaled_freqs(head_dim, rope_base, cfg.rope_scaling)`` and
-  ``af = rope_attention_scale(cfg.rope_scaling)`` once, then rotate q & k with
-  ``rope_from_freqs(.., positions, inv_freq) * af`` (rotate-half, NOT
-  ``llama_decoder_block`` 216).  ``cfg.rope_scaling=None`` → plain rotate-half RoPE.
-  TODO(rope-track): keep expanding YaRN math/details in RoPE tasks (213/215), not here.
-  TODO(compat): forward changes in 213/215 must preserve their original grade paths.
+- **YaRN RoPE:** use the formulas in this task's README Step C, implement reusable
+  primitives in `213` (`rope_scaled_freqs`, `rope_attention_scale`), then consume
+  them here. Compute ``inv_freq = rope_scaled_freqs(head_dim, rope_base,
+  cfg.rope_scaling)`` and ``af = rope_attention_scale(cfg.rope_scaling)``, then
+  apply ``rope_from_freqs(.., positions, inv_freq) * af`` to q and k (rotate-half,
+  NOT ``llama_decoder_block`` 216). ``cfg.rope_scaling=None`` recovers plain
+  rotate-half RoPE.
 """
 
 from __future__ import annotations
@@ -46,11 +46,12 @@ from dataclasses import dataclass
 
 import numpy as np
 
+from leet_llm import deinterleave, softmax, top_k
+
 
 def attention_with_sinks(
     scores: np.ndarray,
     sink_logits: np.ndarray,
-    mask: np.ndarray | None = None,
 ) -> np.ndarray:
     """Softmax-with-sinks attention weights (GPT-OSS delta).
 
@@ -62,15 +63,10 @@ def attention_with_sinks(
     Parameters
     ----------
     scores:
-        Pre-softmax attention logits, shape ``(B, H, L, L)`` — i.e.
-        ``Q K^T * scale`` with NO mask applied yet.
+        Pre-softmax attention logits, shape ``(B, H, L, L)`` with any
+        causal/sliding mask already applied.
     sink_logits:
-        Per-head sink logits, shape ``(H,)``.  Broadcast to one extra key
-        column ``(B, H, L, 1)``.
-    mask:
-        Optional additive mask broadcastable to ``scores`` (``0.0`` attended,
-        ``-inf`` masked).  Applied to ``scores`` before the sink is appended.
-
+        Per-head sink logits, shape ``(H,)``. 
     Returns
     -------
     np.ndarray
@@ -78,7 +74,14 @@ def attention_with_sinks(
         Rows sum to ``1 - sink_mass`` where ``sink_mass`` is the softmax mass on
         the sink column.
     """
-    raise NotImplementedError("Implement attention_with_sinks — see 309_gptoss_model/README.md")
+    shape = list(scores.shape)
+    shape[-1] = 1
+    s4 = sink_logits[None, :, None, None]
+    sink = np.broadcast_to(s4, shape)
+    scores = np.concatenate([scores, sink], axis=-1) # (B, H, L, L+1)
+    y = softmax(scores)
+    y = y[:, :, :, :-1]
+    return y
 
 
 def gptoss_moe_ffn(
@@ -89,32 +92,18 @@ def gptoss_moe_ffn(
     gate_up_bias: np.ndarray,
     down_proj: np.ndarray,
     down_bias: np.ndarray,
-    top_k: int,
+    num_active_experts: int,
     alpha: float = 1.702,
     limit: float = 7.0,
 ) -> np.ndarray:
     """GPT-OSS sparse mixture-of-experts FFN (the GPT-OSS MoE delta).
 
-    Differs from Mixtral's ``moe_ffn`` (308) in every routing/expert detail:
-
-    - **Router has a bias**: ``router_logits = x @ router_weight.T + router_bias``.
-    - **Softmax over the selected top-k logits**, not over all experts:
-      ``scores = softmax(top_k_values)``.
-    - **Interleaved gate/up**: ``gate = gate_up[..., ::2]``, ``up = gate_up[..., 1::2]``.
-    - **Clamped GLU** with bias-1 up gate::
-
-          gate = clip(gate, max=limit)
-          up   = clip(up, -limit, limit)
-          glu  = gate * sigmoid(alpha * gate)
-          out  = (up + 1) * glu
-
-    - **Expert weights applied without transpose** (``x @ gate_up_proj[e]``,
-      ``gated @ down_proj[e]``) and **each expert carries biases**.
-
     Parameters
     ----------
     x:
-        Token activations, shape ``(T, d)`` (T = B*L tokens).
+        Input activations, shape ``(B, L, d)``.
+        Internally flattened to token-major ``(T, d)`` for routing, so passing
+        pre-flattened ``(T, d)`` also works and is returned in the same shape.
     router_weight:
         Router weight, shape ``(num_experts, d)``.
     router_bias:
@@ -129,7 +118,7 @@ def gptoss_moe_ffn(
         Applied as ``gated @ down_proj[e]``.
     down_bias:
         Down bias, shape ``(num_experts, d)``.
-    top_k:
+    num_active_experts:
         Number of experts each token routes to.
     alpha:
         GLU sigmoid gain (GPT-OSS uses ``1.702``).
@@ -141,7 +130,28 @@ def gptoss_moe_ffn(
     np.ndarray
         Same shape as ``x``.
     """
-    raise NotImplementedError("Implement gptoss_moe_ffn — see 309_gptoss_model/README.md")
+    x_shape = x.shape
+    d_model = x_shape[-1]
+    x = x.reshape((-1, d_model)) # [T, d]
+    router_logits = x @ router_weight.T + router_bias # [T, k]
+    weights, idx = top_k(router_logits, num_active_experts) # [T, k]
+    weights = softmax(weights)
+
+    out = np.zeros_like(x)
+    T = x.shape[0]
+
+    for t in range(T):
+        for k in idx[t]:
+            gate_up = x[t] @ gate_up_proj[k] + gate_up_bias[k]
+            gate, up = deinterleave(gate_up)
+            gate = np.minimum(gate, limit)
+            up = np.clip(up, -limit, limit)
+            glu = gate * np.sigmoid(alpha * gate)
+            gated = (up + 1) * glu
+            out[t] += (gated @ down_proj[k] + down_bias[k]) * weights[t, k]
+
+    return out.reshape(x_shape)
+
 
 
 # ---------------------------------------------------------------------------
