@@ -54,7 +54,7 @@ Use this section order for L3+ tasks with multiple deltas.
 
 Add a table:
 
-| Component | Baseline behavior | Task delta | Where implemented |
+| Component | Baseline behavior | Task delta | Where wired |
 |---|---|---|---|
 
 Goal: students can instantly see what is unchanged.
@@ -68,8 +68,10 @@ Before coding, list exact prerequisite operators and expected behavior (not just
 For each step, always include:
 
 - **Why add this?** what gap in the baseline this delta solves.
+  - Must explain architecture intent, not just "this test needs it".
+  - Include: what is weak in the baseline, and why this delta is the chosen tradeoff.
 - **Purpose** what behavior we want after adding it.
-- **What** to implement (shape-level contracts).
+- **What** to build (shape-level contracts).
 - **How** (formula or pseudocode, no full code).
 - **Check** (a fast test or invariant before moving on).
 
@@ -131,39 +133,17 @@ Do not start from `216_llama_decoder_block` for 309 implementation details, beca
 | RoPE schedule | default/llama3 schedule | YaRN schedule + attention scale wiring |
 | Head scaling | `1/sqrt(head_dim)` | same formula, but `head_dim` is explicit config field |
 
-### 1.1 Delta cards (Why add this? / Purpose)
+### 2) Step A: `attention_with_sinks`
 
-- **Delta: attention sinks**
-  - Why add this? Standard softmax forces all mass onto visible keys.
-  - Purpose: allow part of mass to leak into a learned sink state, improving stability/robustness under long-context and sparse-attention regimes.
+#### Why add this?
 
-- **Delta: attention projection biases (`q/k/v/o`)**
-  - Why add this? Purely bias-free projections can be less expressive for distribution shifts and token-level offsets.
-  - Purpose: keep extra affine flexibility in attention projections while preserving RoPE behavior by applying RoPE after affine projection (bias rotates together with q/k; no special conflict handler needed).
+In plain causal softmax, every query must distribute 100% probability over visible tokens, even when none is a good match.  
+At long context, this can create forced, low-quality token-to-token coupling: attention mass still has to go somewhere.  
+GPT-OSS adds a learned sink channel so the model can represent "none of the above" without inventing spurious token alignments.
 
-- **Delta: alternating sliding/full mask**
-  - Why add this? Full attention every layer is expensive; sliding-only everywhere can lose global aggregation.
-  - Purpose: mix local-efficiency layers (even) with global-context layers (odd) to balance compute and information flow.
+#### Purpose
 
-- **Delta: GPT-OSS MoE (vs Mixtral MoE)**
-  - Why add this? GPT-OSS expert routing/activation design differs from Mixtral and cannot be reproduced by 308 logic.
-  - Purpose: enforce GPT-OSS-native sparse routing behavior and expert arithmetic so whole-model parity matches reference.
-
-- **Delta: YaRN schedule + attention scale**
-  - Why add this? Default RoPE frequency progression degrades when extrapolating to much longer context.
-  - Purpose: reshape inverse frequencies for long-context behavior and correct effective attention temperature with YaRN scale.
-
-- **Delta: explicit `head_dim` in config**
-  - Why add this? Some architectures decouple `hidden_size` from `n_heads * head_dim` assumptions.
-  - Purpose: ensure attention shape/scale is driven by explicit model config, avoiding hidden coupling bugs.
-
----
-
-### 2) Step A: implement `attention_with_sinks`
-
-#### Why
-
-GPT-OSS adds a learnable sink logit per head so attention mass can leak out of token keys.
+Add a learned sink channel so each row can leak part of the mass outside visible keys when beneficial.
 
 #### What
 
@@ -186,15 +166,25 @@ GPT-OSS adds a learnable sink logit per head so attention mass can leak out of t
 
 ---
 
-### 3) Step B: implement `gptoss_moe_ffn`
+### 3) Step B: `gptoss_moe_ffn`
 
-#### Why
+#### Why add this?
 
-GPT-OSS MoE is not interchangeable with Mixtral `moe_ffn`; using 308 logic will fail parity.
+GPT-OSS is not trying to reuse Mixtral routing unchanged; it changes the routing contract itself.
+
+In Mixtral-style routing, scores are normalized over all experts first, then truncated and renormalized.  
+With many experts, this makes selected weights indirectly depend on tail experts that were not selected, which can make dispatch less local and less stable under expert-count/scale shifts.
+
+GPT-OSS instead makes dispatch depend only on selected experts (top-k logits -> softmax over selected), adds router/expert biases for better per-expert calibration, and clamps the gate/up path to bound extreme activations.  
+So this is not "Mixtral can't be used"; it is "GPT-OSS chooses a different MoE operating point: top-k-local routing + calibrated affine terms + bounded expert dynamics."
+
+#### Purpose
+
+Match GPT-OSS-native sparse routing behavior (router bias, selected-topk softmax, interleaved gate/up, clamped activation) so whole-model parity matches reference.
 
 #### What
 
-Implement token-wise sparse expert routing with GPT-OSS-specific rules.
+Token-wise sparse expert routing with GPT-OSS-specific rules.
 
 #### How
 
@@ -229,6 +219,25 @@ Implement token-wise sparse expert routing with GPT-OSS-specific rules.
 ### 4) Step C: YaRN explained and wired (core theory section)
 
 This section must exist explicitly in 309-level tutorials.
+
+Course flow contract for this repo's design:
+
+- `309` teaches the YaRN requirement and target behavior first.
+- Students then implement reusable YaRN primitives in `213` (`rope_scaled_freqs`, `rope_attention_scale`).
+- Then return to `309` and wire them through the existing `213/215` interfaces.
+
+Do not duplicate YaRN math directly inside `309` forward; keep RoPE logic reusable at the primitive layer.
+
+#### Why add this?
+
+Default RoPE frequencies are tuned for pretraining context ranges; direct extrapolation to much longer windows can distort phase behavior and harm long-range attention quality.
+
+GPT-OSS adopts YaRN to change the frequency schedule so long-context behavior is better conditioned, while preserving useful short-range structure.
+YaRN also introduces attention-scale correction so the q/k magnitude regime stays calibrated after frequency reshaping.
+
+#### Purpose
+
+Reshape frequencies for long-context behavior while keeping attention temperature calibrated through YaRN scale.
 
 #### 4.1 RoPE recap
 
@@ -291,6 +300,21 @@ The previous steps produce correct local operators, but GPT-OSS parity depends o
 
 Guarantee the final logits reflect GPT-OSS architecture semantics, not just individually correct subfunctions.
 
+#### Delta note: attention projection biases (`q/k/v/o`)
+
+- Why add this? Bias-free projections are elegant, but they remove an affine degree of freedom that can help attention calibration under distribution shifts and heterogeneous token statistics.
+- Purpose: keep affine flexibility in attention projections while preserving RoPE compatibility by ordering as affine(with bias) first, then RoPE on q/k.
+
+#### Delta note: alternating sliding/full mask
+
+- Why add this? Full attention everywhere is expensive, but sliding-only everywhere can under-propagate global information across layers.
+- Purpose: combine local-efficiency layers (even) with global-context layers (odd).
+
+#### Delta note: explicit `head_dim`
+
+- Why add this? Not all model families keep strict `hidden_size = n_heads * head_dim` assumptions in config surfaces.
+- Purpose: drive head split and score scaling from explicit config, avoiding hidden coupling bugs.
+
 Per layer:
 
 1. `a = rms_norm(h, input_layernorm)`
@@ -316,7 +340,7 @@ After final layer:
 
 ---
 
-### 6) Step E: implement `load_gptoss`
+### 6) Step E: `load_gptoss`
 
 #### Why add this?
 
