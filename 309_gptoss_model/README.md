@@ -1,272 +1,321 @@
-# 309 — Attention Sinks + GPT-OSS MoE: GPT-OSS Whole-Model Forward
+## 309 — From Llama baseline to GPT-OSS forward
 
-## Description
+### Learning objective
 
-GPT-OSS is OpenAI's open-weight Llama-style decoder. It keeps GQA + rotate-half
-RoPE but adds two localized deltas on top of the baseline (303): **attention
-sinks** and a **GPT-OSS-flavoured sparse mixture-of-experts FFN**. You implement
-each delta and then assemble a runnable `gptoss_forward → logits`.
+Starting from a Llama-style decoder baseline, implement GPT-OSS forward by adding five localized deltas:
 
-Two new operators plus the whole-model assembly:
+1. attention sinks,
+2. GPT-OSS MoE,
+3. YaRN RoPE wiring,
+4. alternating sliding/full attention masks,
+5. GPT-OSS loader mapping.
 
-1. **`attention_with_sinks(scores, sink_logits, mask=None)`** — softmax with one
-   extra learned **sink** logit per head in the denominator. The sink column is
-   appended, the softmax is taken over the widened axis, and the sink column is
-   then dropped — so each attention row sums to **less than 1** (mass leaks into
-   the discarded sink).
-2. **`gptoss_moe_ffn(...)`** — GPT-OSS's sparse MoE. It is **not** Mixtral's
-   `moe_ffn` (308); see the contrast table below.
-3. **`GptOssConfig` / `GptOssParams` / `load_gptoss` / `gptoss_forward`** — the
-   GPT-OSS decoder-only model.
+---
 
-**GIVEN — the GPT-OSS wrinkles** (each is architecture-as-spec):
+### 0) Start from the right baseline
 
-- **Attention sinks** — each head has one learned scalar `sink_logit`. It enters
-  the softmax denominator as an extra (key-less) column; after softmax it is
-  discarded, so the attention weights no longer sum to 1.
-- **QKV/O biases** — unlike Llama/Mistral, GPT-OSS attention projections all carry
-  biases (`config.attention_bias = True`).
-- **Attention scale** — `head_dim ** -0.5` (and `n_heads * head_dim` need not equal
-  `hidden_size`; `head_dim` is set explicitly).
-- **Alternating SWA/full layers** — even-indexed layers (0, 2, …) use a
-  sliding-window causal mask (`sliding_window_mask`, reused from 305); odd-indexed
-  layers use full causal.
-- **GPT-OSS MoE** — top-k routing with a **biased** router, a softmax taken over the
-  **selected** logits, interleaved gate/up, and a clamped GLU activation (below).
-- **RoPE** — GPT-OSS's real schedule is **YaRN** long-context scaling:
-  `inv_freq = rope_scaled_freqs(head_dim, rope_base, cfg.rope_scaling)` and the attention
-  temperature `af = rope_attention_scale(cfg.rope_scaling)`, applied as
-  `rope_from_freqs(.., inv_freq) * af` (rotate-half). `cfg.rope_scaling=None` → plain
-  rotate-half RoPE.
+Use this as your mental baseline:
 
-**YaRN learning scope for this task:** 309 is where YaRN is introduced and required, but the
-reusable implementation surface lives in earlier primitives:
+- Attention backbone: Llama/Mistral-style GQA with rotate-half RoPE.
+- Residual structure: pre-norm RMSNorm, then attention residual, then FFN residual.
+- Decoder-only causal forward: embed -> N blocks -> final norm -> lm head.
 
-- `213_rope`: `rope_scaled_freqs(..., rope_type="yarn")`, `rope_attention_scale(...)`,
-  `rope_from_freqs(...)`
-- `215_gqa`: RoPE hook wiring (`positions` + `RopeParams`) used by whole-model call sites
+Do not use `216_llama_decoder_block` as the implementation template for 309 details.  
+Task 309 requires explicit GPT-OSS attention and MoE behavior that is not represented there.
 
-To avoid leaking this requirement into earlier grades, YaRN-specific checks are asserted in 309
-tests (not in 213/215 tests).
+---
 
-**Forward-Dependency TODOs**
+### 1) Delta map (what changed vs baseline)
 
-- **TODO(213):** add YaRN behavior to `rope_scaled_freqs` and `rope_attention_scale`,
-  while preserving existing 213 test behavior for non-YaRN paths.
-- **TODO(215):** keep RoPE hook wiring (`positions` + `RopeParams`) compatible with
-  prior 215 behavior when hook args are omitted.
-- **Compatibility contract:** these forward changes must not break `uv run grade 213`
-  or `uv run grade 215`; 309 validates the new paths directly.
-
-### GPT-OSS MoE vs Mixtral `moe_ffn` (308)
-
-| | Mixtral `moe_ffn` (308) | GPT-OSS `gptoss_moe_ffn` (309) |
+| Component | Baseline | GPT-OSS delta in 309 |
 |---|---|---|
-| router bias | none | **yes** (`mlp.router.bias`) |
-| gate softmax | over **all** experts, then top-k, then renormalise | over the **selected top-k** logits only |
-| expert bias | none | **yes** (`gate_up_proj_bias`, `down_proj_bias`) |
-| gate/up split | halves `[ :Fd ]` / `[ Fd: ]` | **interleaved** `[::2]` / `[1::2]` |
-| activation | `SiLU(gate) * up` | clamped `(up+1) · gate · σ(α·gate)` |
-| weight layout | `x @ W.T` | `x @ W` (input dim first, **no transpose**) |
+| Attention normalization | softmax over keys | softmax over keys plus one sink column, then drop sink |
+| Attention projections | often bias-free in Llama/Mistral | q/k/v/o all include bias |
+| Attention mask policy | usually full causal or all sliding | even layers sliding-window, odd layers full causal |
+| FFN | dense SwiGLU or Mixtral MoE | GPT-OSS-specific MoE (different from 308 in routing + expert math) |
+| RoPE schedule | default/llama3 schedule | YaRN schedule + attention scale wiring |
+| Head scaling | `1/sqrt(head_dim)` | same formula, but `head_dim` is an explicit config field |
 
-Because every routing/expert detail differs, GPT-OSS gets its **own** MoE operator
-rather than reusing 308's.
+### 2) Step A: `attention_with_sinks`
 
-> **→ L4:** this task implements the forward-pass arithmetic only. The
-> **streaming sink + sliding-window KV-cache eviction** during decode (keeping the
-> per-head sink while dropping out-of-window keys) is an inference-systems concern,
-> deferred to Level 4.
+#### Why add this?
 
----
+In plain causal softmax, each query must distribute 100% probability over visible tokens, even when none is a strong match.  
+At long context, that constraint can force weak token-to-token couplings simply because the probability mass must be assigned somewhere.  
+GPT-OSS adds a learned sink channel so the model can represent "none of the above" without inventing a token alignment.
 
-## The Math
+#### Purpose
 
-### `attention_with_sinks`
+Add a learned sink channel so each attention row can route part of its mass outside visible keys when that is preferable.
 
-Given per-head scores `S ∈ R^(B,H,L,L)` (already `= Q Kᵀ · scale`), an additive
-`mask`, and per-head sinks `z ∈ R^H`:
+#### What
 
-```
-S'        = S + mask                              # (B, H, L, L)
-combined  = concat([S', broadcast(z)], axis=-1)   # (B, H, L, L+1)
-P         = softmax(combined, axis=-1)            # over the L+1 columns
-weights   = P[..., :-1]                            # drop the sink column
-```
+- Input: `scores` shape `(B, H, L, L)`, optional additive mask, `sink_logits` shape `(H,)`.
+- Output: `(B, H, L, L)`; row sums are `< 1` when sink logits are finite.
 
-Each row of `weights` sums to `1 − P[..., -1]` (the sink mass). Setting
-`z = -inf` zeroes the sink column and recovers the plain softmax (rows sum to 1).
+#### How
 
-### `gptoss_moe_ffn`
+1. Apply additive mask to `scores` if present.
+2. Broadcast sink logits to `(B, H, L, 1)`.
+3. Concatenate as an extra last-axis column -> `(B, H, L, L+1)`.
+4. Run softmax over the last axis.
+5. Drop the sink column and return the remaining `L` columns.
 
-Let `x ∈ R^(T, d)`, router `(W_r, b_r)`, and `E` experts with packed weights.
+#### Check before continuing
 
-```
-router_logits = x @ W_rᵀ + b_r                       # (T, E)
-vals, idx     = top_k(router_logits, k)              # (T, k) — k largest, descending
-scores        = softmax(vals)                         # softmax over the SELECTED k
-```
-
-For each token `t` and each selected expert `e = idx[t, j]`:
-
-```
-gate_up = x_t @ gate_up_proj[e] + gate_up_bias[e]    # (2F,)
-gate    = gate_up[::2]                                 # even columns
-up      = gate_up[1::2]                                # odd  columns
-gate    = min(gate, limit)                            # clamp max only (limit = 7.0)
-up      = clip(up, -limit, limit)
-glu     = gate · sigmoid(alpha · gate)               # alpha = 1.702
-out_e   = (up + 1) · glu @ down_proj[e] + down_bias[e]   # (d,)
-
-moe(x_t) = Σ_j  scores[t, j] · out_{idx[t,j]}
-```
-
-### Whole-model `gptoss_forward`
-
-```
-inv_freq = rope_scaled_freqs(head_dim, rope_base, cfg.rope_scaling)   # YaRN
-af       = rope_attention_scale(cfg.rope_scaling)                     # ≈1.35 for YaRN
-h = embedding(input_ids, tok_embed)
-
-for i, layer in enumerate(layers):
-    a = rms_norm(h, input_layernorm)
-    q = (a @ q_proj.T + q_bias) → (B, H,   L, head_dim) ; rope_from_freqs(q, positions, inv_freq) * af
-    k = (a @ k_proj.T + k_bias) → (B, KVH, L, head_dim) ; rope_from_freqs(k, positions, inv_freq) * af
-    v = (a @ v_proj.T + v_bias) → (B, KVH, L, head_dim)
-    k, v   = repeat_kv(k, v, H // KVH)                       # GQA
-    scores = (q @ k.T) * (head_dim ** -0.5)
-    mask   = sliding_window_mask(L, window) if i even else full causal
-    probs  = attention_with_sinks(scores, sinks, mask)
-    a = probs @ v → merge heads → @ o_proj.T + o_bias
-    h = h + a                                                # residual 1
-
-    f = rms_norm(h, post_attention_layernorm)
-    f = gptoss_moe_ffn(f, router, experts, num_experts_per_tok)
-    h = h + f                                                # residual 2
-
-h = rms_norm(h, final_norm)
-logits = h @ lm_head.T
-```
-
-**Note:** the attention math composes from granular primitives (rotate-half RoPE,
-explicit scores → sink softmax), *not* from `llama_decoder_block` (216, which is
-interleaved-RoPE only).
+- finite sink -> row sums `< 1`
+- sink `=-inf` -> recovers plain softmax
+- masked future positions remain zero
 
 ---
 
-## GIVEN — HF weight map (`load_gptoss`)
+### 3) Step B: `gptoss_moe_ffn`
 
-GPT-OSS uses rotate-half RoPE, so weights map **as-is** (no un-permute):
+#### Why add this?
 
-```
-model.embed_tokens.weight                       (V, d)
-model.norm.weight                               (d,)
-lm_head.weight                                  (V, d)   # absent → tie to embed
+GPT-OSS does not reuse Mixtral routing unchanged; it defines a different routing contract.
 
-model.layers.{i}.input_layernorm.weight             (d,)
-model.layers.{i}.post_attention_layernorm.weight    (d,)
-model.layers.{i}.self_attn.q_proj.weight            (n_heads    * head_dim, d)
-model.layers.{i}.self_attn.q_proj.bias              (n_heads    * head_dim,)
-model.layers.{i}.self_attn.k_proj.weight            (n_kv_heads * head_dim, d)
-model.layers.{i}.self_attn.k_proj.bias              (n_kv_heads * head_dim,)
-model.layers.{i}.self_attn.v_proj.weight            (n_kv_heads * head_dim, d)
-model.layers.{i}.self_attn.v_proj.bias              (n_kv_heads * head_dim,)
-model.layers.{i}.self_attn.o_proj.weight            (d, n_heads * head_dim)
-model.layers.{i}.self_attn.o_proj.bias              (d,)
-model.layers.{i}.self_attn.sinks                    (n_heads,)
-model.layers.{i}.mlp.router.weight                  (num_experts, d)
-model.layers.{i}.mlp.router.bias                    (num_experts,)
-model.layers.{i}.mlp.experts.gate_up_proj           (num_experts, d, 2 * intermediate)
-model.layers.{i}.mlp.experts.gate_up_proj_bias      (num_experts, 2 * intermediate)
-model.layers.{i}.mlp.experts.down_proj              (num_experts, intermediate, d)
-model.layers.{i}.mlp.experts.down_proj_bias         (num_experts, d)
-```
+In Mixtral-style routing, scores are normalized over all experts, then truncated and renormalized.  
+In GPT-OSS, routing weights are computed only from selected experts: top-k logits first, softmax over selected logits second.
 
----
+GPT-OSS also includes router/expert biases and clamps key activation paths in the expert computation.  
+For this task, treat those choices as required reference behavior, not optional tuning.
 
-## Function Signatures
+#### Purpose
 
-```python
-def attention_with_sinks(
-    scores: np.ndarray,        # (B, H, L, L) = Q Kᵀ * scale (no mask applied yet)
-    sink_logits: np.ndarray,   # (H,)
-    mask: np.ndarray | None = None,   # additive, broadcastable to scores
-) -> np.ndarray:               # (B, H, L, L), rows sum to < 1
+Match GPT-OSS sparse routing behavior (router bias, selected-topk softmax, interleaved gate/up split, clamped activation path) so whole-model parity matches the reference.
 
-def gptoss_moe_ffn(
-    x: np.ndarray,             # (T, d)
-    router_weight: np.ndarray, # (E, d)
-    router_bias: np.ndarray,   # (E,)
-    gate_up_proj: np.ndarray,  # (E, d, 2*F)
-    gate_up_bias: np.ndarray,  # (E, 2*F)
-    down_proj: np.ndarray,     # (E, F, d)
-    down_bias: np.ndarray,     # (E, d)
-    top_k: int,
-    alpha: float = 1.702,
-    limit: float = 7.0,
-) -> np.ndarray:               # (T, d)
+#### What
 
-def load_gptoss(weights: dict, cfg: GptOssConfig) -> GptOssParams: ...
+Token-wise sparse expert routing with GPT-OSS-specific routing and expert math.
 
-def gptoss_forward(
-    input_ids: np.ndarray,     # (B, L)
-    params: GptOssParams,
-    cfg: GptOssConfig,
-    start_pos: int = 0,
-) -> np.ndarray:               # (B, L, vocab_size)
-```
+#### How
+
+1. Router logits with bias:
+   - `router_logits = x @ router_weight.T + router_bias`
+2. Select top-k logits and indices.
+3. Softmax only over selected top-k logits (not over all experts).
+4. For each selected expert:
+   - `gate_up = x_t @ gate_up_proj[e] + gate_up_bias[e]` (no transpose)
+   - split interleaved:
+     - `gate = gate_up[::2]`
+     - `up = gate_up[1::2]`
+   - clamp:
+     - `gate = min(gate, limit)`
+     - `up = clip(up, -limit, limit)`
+   - activation:
+     - `glu = gate * sigmoid(alpha * gate)`
+     - `gated = (up + 1) * glu`
+   - down projection:
+     - `out_e = gated @ down_proj[e] + down_bias[e]`
+5. Compute the weighted sum of selected experts using top-k softmax scores.
+
+#### Check before continuing
+
+- output shape equals input shape
+- non-selected experts can be zeroed without changing output
+- selected gate scores sum to 1
+- clamp bounds extreme pre-activation effects
 
 ---
 
-## Read More
+### 4) Step C: YaRN explained and wired (core theory section)
 
-- GPT-OSS model card: <https://huggingface.co/openai/gpt-oss-20b>
-- `modeling_gpt_oss.py` in the transformers package (exact arithmetic reference)
-- Attention-sink intuition (StreamingLLM): <https://arxiv.org/abs/2309.17453>
-- `303_llama_model/` — the Llama baseline this re-skins
-- `305_sliding_window_attention/` — the band mask reused for the even (sliding) layers
-- `307_llama31_model/` — Llama-3.1 `llama3` RoPE scaling (contrast reference)
-- `308_mixtral_model/` — Mixtral's MoE, contrasted in the table above
-- Task 213 (`rope_scaled_freqs` / `rope_attention_scale` / `rope_from_freqs`), 005 (`softmax`), 007 (`top_k`)
+- Implement reusable YaRN primitives in `213` (`rope_scaled_freqs`, `rope_attention_scale`).
+- Return to `309` and wire those primitives through the `213/215` interfaces.
+- Do not duplicate RoPE/YaRN directly inside `309` forward. Keep RoPE logic reusable at the primitive layer.
 
-**Real-weights layer (B):** `download.sh` fetches
-`hf-internal-testing/tiny-random-GptOssForCausalLM` (config + safetensors only),
-maps the HF names → `GptOssParams`, and commits `tests/fixtures/real_ref.npz` from a
-genuine `GptOssForCausalLM` with its **native YaRN** RoPE active. The checkpoint's
-weights are random (no demo) — it exists only as the grade-time genuine-HF cross-check
-+ loader coverage (Tier B). The only forced setting is **eager attention** (the
-explicit softmax-with-sink path our forward mirrors).
+#### Why add this?
 
-> **→ L4:** GPT-OSS's real RoPE is YaRN long-context scaling. This task includes the
-> YaRN `inv_freq` + attention-temperature wiring in forward; long-context decode
-> (KV-cache/eviction behavior) is an inference-systems concern deferred to L4.
+Default RoPE frequencies are tuned for pretraining context ranges.  
+When context is extended far beyond that range, direct extrapolation can degrade phase behavior at long distances.
+
+GPT-OSS uses YaRN to reshape the frequency schedule for long-context behavior while preserving useful short-range structure.  
+YaRN also introduces attention-scale correction so q/k magnitudes remain calibrated after frequency reshaping.
+
+#### Purpose
+
+Reshape RoPE frequencies for long context while preserving calibrated attention temperature through YaRN scale.
+
+#### 4.1 RoPE recap
+
+For pair index `i` in head dimension:
+
+- `inv_freq[i] = base^(-2i/d)`
+- angle at position `p`: `theta(p, i) = p * inv_freq[i]`
+
+RoPE rotates q/k pairs by `theta`, converting absolute position into relative phase interaction.
+
+#### 4.2 Why long context needs scaling
+
+When context length extends far beyond pretraining range, the default frequency progression can produce poor long-distance phase behavior.  
+A scaled schedule is needed to preserve useful positional behavior at both short and long ranges.
+
+#### 4.3 YaRN frequency schedule intuition
+
+YaRN blends two regimes:
+
+- **extrapolation-like branch** (original frequencies),
+- **interpolation-like branch** (frequencies divided by scaling factor).
+
+A ramp between low/high rotation bands determines each pair's blend between these branches.  
+In code, this is the `rope_scaled_freqs(..., scaling={"rope_type": "yarn", ...})` path.
+
+#### 4.4 Why YaRN also has attention scale
+
+GPT-OSS YaRN includes an additional scalar:
+
+- `af = rope_attention_scale(scaling)`
+
+In this repo's GPT-OSS wiring, both q and k are multiplied by `af` after RoPE.  
+That scaling adjusts effective attention temperature under the YaRN frequency regime and is part of the reference behavior expected by tests.
+
+#### 4.5 Exact implementation surface across tasks
+
+- Task 213 owns reusable primitives:
+  - `rope_scaled_freqs`
+  - `rope_attention_scale`
+  - `rope_from_freqs`
+- Task 215 provides the RoPE hook path in GQA call sites.
+- Task 309 consumes them in whole-model forward:
+  - `inv_freq = rope_scaled_freqs(head_dim, rope_base, cfg.rope_scaling)`
+  - `af = rope_attention_scale(cfg.rope_scaling)`
+  - `q = rope_from_freqs(q, positions, inv_freq, pair_type="half") * af`
+  - `k = rope_from_freqs(k, positions, inv_freq, pair_type="half") * af`
+
+#### Check before continuing
+
+- yarn config output differs from default RoPE output
+- switching `rope_scaling=None` changes logits
+- 309 cross-task tests for 213/215 YaRN wiring pass
 
 ---
 
-## How to Test
+### 5) Step D: assemble `gptoss_forward` in one deterministic order
 
-```bash
-uv run grade 309                  # grade your implementation
-uv run grade 309 -v               # verbose output
+#### Why add this?
 
-# optional: real-weights parity (downloads a tiny checkpoint, ~MBs)
-bash 309_gptoss_model/download.sh
-```
+By this point, local operators may be correct in isolation, but GPT-OSS parity still depends on exact wiring order.
 
-The test suite checks:
+#### Purpose
 
-- `test_sinks_matches_oracle` / `test_sinks_rows_sum_below_one` /
-  `test_sinks_neg_inf_recovers_plain_softmax` / `test_sinks_respects_mask`:
-  `attention_with_sinks` vs the float64 oracle and its sink invariants.
-- `test_moe_matches_oracle` / `test_moe_routing_depends_only_on_top_k` /
-  `test_moe_gate_scores_sum_to_one` / `test_moe_clamps_preactivations`:
-  `gptoss_moe_ffn` vs the float64 oracle, routing sparsity, score normalisation,
-  and pre-activation clamping.
-- `test_gptoss_logits_match_oracle`: whole-model logit parity vs the committed float64
-  oracle at `rtol=1e-9`.
-- `test_gptoss_logits_shape` / `test_gptoss_causal`: output shape and causal masking.
-- `test_gptoss_alternating_sliding_full_masks`: even layers consult the sliding window.
-- `test_gptoss_yarn_rope_is_wired`: the YaRN schedule is applied (yarn ≠ default RoPE).
-- `test_213_yarn_freqs_and_scale_match_reference` / `test_215_gqa_rope_hook_applies_yarn_scale`:
-  309 validates the new YaRN behavior contributed by tasks 213/215.
-- `test_gptoss_real_weights_logits` *(skipped until `download.sh` runs)*: parity vs a
-  genuine `GptOssForCausalLM` on real weights.
+Ensure final logits reflect GPT-OSS architecture semantics, not just individually correct subfunctions.
+
+#### Delta note: attention projection biases (`q/k/v/o`)
+
+- Why add this? GPT-OSS checkpoints include affine attention projections.
+- Purpose: preserve parity by applying affine projections (with bias) before RoPE on q/k.
+
+#### Delta note: alternating sliding/full mask
+
+- Why add this? GPT-OSS alternates local and global attention layers.
+- Purpose: apply sliding-window masks on even layers and full causal masks on odd layers.
+
+#### Delta note: explicit `head_dim`
+
+- Why add this? GPT-OSS config exposes `head_dim` explicitly.
+- Purpose: derive head split and score scaling from config instead of implicit size assumptions.
+
+Per layer:
+
+1. `a = rms_norm(h, input_layernorm)`
+2. q/k/v affine projection with bias
+3. head split
+4. YaRN RoPE on q/k (rotate-half path)
+5. repeat kv to query-head count
+6. scores with `head_dim**-0.5`
+7. mask selection:
+   - even layer index -> sliding-window mask
+   - odd layer index -> full causal mask
+8. `attention_with_sinks`
+9. weighted value aggregation + o projection with bias
+10. first residual add
+11. post-attn norm
+12. `gptoss_moe_ffn`
+13. second residual add
+
+After final layer:
+
+- final RMSNorm
+- logits via `lm_head.T`
+
+---
+
+### 6) Step E: `load_gptoss`
+
+#### Why add this?
+
+Whole-model parity can fail even when operator math is correct if HF tensors are mapped to the wrong internal slots.
+
+#### Purpose
+
+Build a deterministic bridge from HF state-dict names to internal parameters so `gptoss_forward` runs correctly on both tiny fixtures and real weights.
+
+Map HF names directly to internal parameter slots, including GPT-OSS-specific fields:
+
+- q/k/v/o bias tensors
+- per-head sinks
+- router bias
+- expert bias tensors
+- `lm_head` fallback to tied embedding if absent
+
+No un-permute path is required for rotate-half layout.
+
+---
+
+### 7) Verification ladder (run in this order)
+
+1. **Operator parity**
+   - sinks oracle tests
+   - GPT-OSS MoE oracle tests
+2. **Cross-task YaRN checks**
+   - `rope_scaled_freqs` + `rope_attention_scale`
+   - GQA RoPE-hook effect
+3. **Whole-model parity**
+   - tiny fixture logits parity
+   - shape + causal invariants
+   - alternating mask effect
+   - YaRN-vs-default behavioral difference
+4. **Optional real-weight parity**
+   - after running `download.sh`
+
+---
+
+### 8) Debug playbook (symptom -> likely cause)
+
+- Row sums are exactly 1 in sinks tests  
+  -> sink column was not appended, or it was not removed correctly after softmax.
+
+- MoE outputs are close but off from oracle  
+  -> Mixtral-style logic was used accidentally (softmax over all experts, wrong split, or wrong transpose).
+
+- YaRN tests fail but 213 base RoPE tests pass  
+  -> `rope_scaling` path is not wired, or `af` is not applied.
+
+- Alternating-mask test fails  
+  -> one mask policy is being reused for all layers; branch by layer index.
+
+- Real-weight parity fails while tiny parity passes  
+  -> loader key mapping or dtype/shape assumptions are incorrect.
+
+---
+
+## Delta coverage checklist for 309
+
+This tutorial covers all deltas required for a student with completed prerequisites to implement 309:
+
+- [x] attention sinks operator and invariants
+- [x] GPT-OSS MoE routing/expert arithmetic deltas vs Mixtral
+- [x] q/k/v/o biases in attention path
+- [x] explicit `head_dim` scaling
+- [x] alternating sliding/full mask policy
+- [x] YaRN theory, schedule intent, and wiring surface
+- [x] whole-forward assembly order
+- [x] HF loader mapping specifics
+- [x] verification and debugging workflow
+
+Deferred to later levels (explicitly out of scope):
+
+- streaming sink KV-cache behavior and eviction details
+- serving/runtime system optimizations
+

@@ -216,7 +216,7 @@ Token-wise sparse expert routing with GPT-OSS-specific rules.
 
 ---
 
-### 4) Step C: YaRN explained and wired (core theory section)
+### 4) Step C: YaRN
 
 This section must exist explicitly in 309-level tutorials.
 
