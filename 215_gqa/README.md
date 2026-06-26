@@ -10,6 +10,9 @@ several query heads a *shared* K/V head — `n_kv_heads < n_heads`, with each K/
 to cover its group. It interpolates between full MHA (`n_kv_heads = n_heads`) and
 multi-query attention (`n_kv_heads = 1`), and is what Llama-3 and most large models use.
 
+This task also defines the reusable RoPE hook surface (`RopeParams`, optional `positions` /
+`rope_params` inputs on `gqa`) used by later long-context whole-model tasks.
+
 ## The Math
 
 With `n_heads` query heads, `n_kv_heads` key/value heads, group size `g = n_heads / n_kv_heads`,
@@ -28,7 +31,9 @@ When `n_kv_heads == n_heads` this is exactly MHA (a useful invariant to test).
 
 ```python
 def gqa(x: np.ndarray, params: AttnParams, n_heads: int, n_kv_heads: int,
-        mask: np.ndarray | None = None) -> np.ndarray: ...
+        mask: np.ndarray | None = None,
+        positions: np.ndarray | None = None,
+        rope_params: RopeParams | None = None) -> np.ndarray: ...
 #   reuses AttnParams (206); here Wk, Wv project to n_kv_heads·d_k   ->   (..., L, d)
 ```
 

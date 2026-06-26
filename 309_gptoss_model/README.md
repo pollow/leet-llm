@@ -39,6 +39,25 @@ Two new operators plus the whole-model assembly:
   `rope_from_freqs(.., inv_freq) * af` (rotate-half). `cfg.rope_scaling=None` → plain
   rotate-half RoPE.
 
+**YaRN learning scope for this task:** 309 is where YaRN is introduced and required, but the
+reusable implementation surface lives in earlier primitives:
+
+- `213_rope`: `rope_scaled_freqs(..., rope_type="yarn")`, `rope_attention_scale(...)`,
+  `rope_from_freqs(...)`
+- `215_gqa`: RoPE hook wiring (`positions` + `RopeParams`) used by whole-model call sites
+
+To avoid leaking this requirement into earlier grades, YaRN-specific checks are asserted in 309
+tests (not in 213/215 tests).
+
+**Forward-Dependency TODOs**
+
+- **TODO(213):** add YaRN behavior to `rope_scaled_freqs` and `rope_attention_scale`,
+  while preserving existing 213 test behavior for non-YaRN paths.
+- **TODO(215):** keep RoPE hook wiring (`positions` + `RopeParams`) compatible with
+  prior 215 behavior when hook args are omitted.
+- **Compatibility contract:** these forward changes must not break `uv run grade 213`
+  or `uv run grade 215`; 309 validates the new paths directly.
+
 ### GPT-OSS MoE vs Mixtral `moe_ffn` (308)
 
 | | Mixtral `moe_ffn` (308) | GPT-OSS `gptoss_moe_ffn` (309) |
@@ -207,7 +226,7 @@ def gptoss_forward(
 - `305_sliding_window_attention/` — the band mask reused for the even (sliding) layers
 - `307_llama31_model/` — Llama-3.1 `llama3` RoPE scaling (contrast reference)
 - `308_mixtral_model/` — Mixtral's MoE, contrasted in the table above
-- Task 213 (`rope_half`), 005 (`softmax`), 007 (`top_k`)
+- Task 213 (`rope_scaled_freqs` / `rope_attention_scale` / `rope_from_freqs`), 005 (`softmax`), 007 (`top_k`)
 
 **Real-weights layer (B):** `download.sh` fetches
 `hf-internal-testing/tiny-random-GptOssForCausalLM` (config + safetensors only),
@@ -247,5 +266,7 @@ The test suite checks:
 - `test_gptoss_logits_shape` / `test_gptoss_causal`: output shape and causal masking.
 - `test_gptoss_alternating_sliding_full_masks`: even layers consult the sliding window.
 - `test_gptoss_yarn_rope_is_wired`: the YaRN schedule is applied (yarn ≠ default RoPE).
+- `test_213_yarn_freqs_and_scale_match_reference` / `test_215_gqa_rope_hook_applies_yarn_scale`:
+  309 validates the new YaRN behavior contributed by tasks 213/215.
 - `test_gptoss_real_weights_logits` *(skipped until `download.sh` runs)*: parity vs a
   genuine `GptOssForCausalLM` on real weights.

@@ -1,6 +1,7 @@
-"""213 — RoPE (Rotary Position Embedding), two conventions + the relative-position checker.
+"""213 — RoPE (Rotary Position Embedding), conventions + reusable long-context helpers.
 
-Implement ``rope_interleaved``, ``rope_half`` and ``rope_qk_dot``. See README.md.
+Implement ``rope_interleaved``, ``rope_half``, ``rope_qk_dot``, and the reusable helpers
+``rope_scaled_freqs`` / ``rope_attention_scale`` / ``rope_from_freqs``. See README.md.
 Run `uv run grade 213` to check your work.
 
 Hint: you may reuse ``from leet_llm import interleave, deinterleave, split_halves,
@@ -29,3 +30,33 @@ def rope_qk_dot(q: np.ndarray, k: np.ndarray, m: int, n: int, base: float = 1000
     (n - m), and equals <q, k> when m == n.
     """
     raise NotImplementedError("Implement rope_qk_dot — see 213_rope/README.md")
+
+
+def rope_scaled_freqs(
+    head_dim: int,
+    base: float,
+    scaling: dict | None = None,
+) -> np.ndarray:
+    """Compute RoPE inverse frequencies for default/llama3/yarn schedules.
+
+    This primitive is reused by long-context whole-model tasks (e.g. 307/309).
+    """
+    raise NotImplementedError("Implement rope_scaled_freqs — see 213_rope/README.md")
+
+
+def rope_attention_scale(scaling: dict | None = None) -> float:
+    """Return RoPE attention temperature scale for the active schedule.
+
+    For YaRN this is the extra multiplicative factor applied to q/k RoPE outputs.
+    """
+    raise NotImplementedError("Implement rope_attention_scale — see 213_rope/README.md")
+
+
+def rope_from_freqs(
+    x: np.ndarray,
+    positions: np.ndarray,
+    inv_freq: np.ndarray,
+    pair_type: str = "interleaved",
+) -> np.ndarray:
+    """Apply RoPE using precomputed inverse frequencies."""
+    raise NotImplementedError("Implement rope_from_freqs — see 213_rope/README.md")

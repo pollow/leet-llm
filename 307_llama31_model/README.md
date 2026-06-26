@@ -6,22 +6,26 @@ Llama-3.1 is the baseline Llama (303) with exactly one localized delta: the RoPE
 **inverse frequencies are rescaled** so the same pretrained weights generalise from
 the 8K pretraining window out to 128K tokens. The attention math, GQA, SwiGLU,
 RMSNorm and rotate-half RoPE are all unchanged — only the *frequencies* that go into
-the rotation are bent. In this task you implement that schedule and apply step, then
-start from a **direct call to 303's `llama_forward`** so the default behavior is visible
+the rotation are bent. In this task you wire those helpers into the whole-model forward,
+starting from a **direct call to 303's `llama_forward`** so the default behavior is visible
 before refactoring toward RoPE-strategy injection.
 
-Two new operators plus the whole-model assembly:
+This task reuses RoPE helpers from **Task 213** and focuses on whole-model integration:
 
-1. **`rope_scaled_freqs(head_dim, base, scaling)`** — compute the per-pair inverse
-   frequencies `inv_freq` for `default` (or `None`) and Llama-3.1's native
-   `rope_type="llama3"`. With `scaling=None` this is plain RoPE; `llama3` bends low
-   frequencies so far-apart positions *interpolate* rather than extrapolate.
-2. **`rope_from_freqs(x, positions, inv_freq)`** — rotate-half RoPE applied with a
-   **precomputed** `inv_freq`. Identical rotation to 213's `rope_half`; the only
-   difference is that the (rescaled) frequencies are supplied rather than derived from
-   `base`.
+1. **`rope_scaled_freqs(head_dim, base, scaling)`** *(from 213)* — compute the per-pair
+   inverse frequencies `inv_freq` for `default` (or `None`) and Llama-3.1's native
+   `rope_type="llama3"`.
+2. **`rope_from_freqs(x, positions, inv_freq)`** *(from 213)* — apply rotate-half RoPE
+   using precomputed frequencies.
 3. **`Llama31Config` / `Llama31Params` / `load_llama31` / `llama31_forward`** — the
-   Llama-3.1 decoder-only model, initially wired by reusing 303's forward.
+   Llama-3.1 decoder-only model, wired by reusing 303's forward with injected RoPE strategy.
+
+### Forward-Dependency TODOs
+
+- **TODO(213)** — provide `rope_scaled_freqs` / `rope_from_freqs` through `leet_llm`.
+- **TODO(215)** — keep GQA's optional `positions` / `rope_params` hook stable.
+- **Compatibility contract:** these forward dependencies must not break existing
+  `uv run grade 213` / `uv run grade 215` behavior when the new hook paths are unused.
 
 **GIVEN — the Llama-3.1 wrinkle** (architecture-as-spec):
 
@@ -46,7 +50,7 @@ inv_freq[j] = 1 / base ** (2j / d)      for j = 0 .. d/2 - 1
 wavelen[j]  = 2π / inv_freq[j]
 ```
 
-### `rope_scaled_freqs`
+### Reused RoPE Helpers (Task 213)
 
 `scaling["rope_type"]` picks the schedule:
 
@@ -62,17 +66,6 @@ wavelen[j]  = 2π / inv_freq[j]
       s          = (O / wavelen − low_freq_factor) / (high_freq_factor − low_freq_factor)
       inv_freq[j] = (1 − s) · inv_freq[j] / factor + s · inv_freq[j]
   ```
-
-### `rope_from_freqs`
-
-The apply step is the rotate-half rotation, unchanged from 213:
-
-```
-angle = positions[:, None] * inv_freq            # (L, d/2)
-angle = concat([angle, angle], axis=-1)          # (L, d)
-out   = x · cos(angle) + rotate_half(x) · sin(angle)
-rotate_half(x) = concat([-x[..., d/2:], x[..., :d/2]], axis=-1)
-```
 
 ### Whole-model `llama31_forward`
 
@@ -110,21 +103,9 @@ model.layers.{i}.mlp.down_proj.weight               (d, intermediate)
 
 ---
 
-## Function Signatures
+## Function Signatures (Implemented in 307)
 
 ```python
-def rope_scaled_freqs(
-    head_dim: int,
-    base: float,
-    scaling: dict | None = None,   # rope_scaling config; None → default RoPE
-) -> np.ndarray:                   # (head_dim / 2,) inverse frequencies
-
-def rope_from_freqs(
-    x: np.ndarray,                 # (..., head_dim)
-    positions: np.ndarray,         # (L,)
-    inv_freq: np.ndarray,          # (head_dim / 2,)
-) -> np.ndarray:                   # same shape as x
-
 def load_llama31(weights: dict, cfg: Llama31Config) -> Llama31Params: ...
 
 def llama31_forward(
@@ -142,7 +123,7 @@ def llama31_forward(
 - Llama-3.1 RoPE scaling (the `llama3` schedule): `transformers.modeling_rope_utils`
   (`_compute_llama3_parameters`) — the exact arithmetic reference.
 - `303_llama_model/` — the Llama baseline this re-skins
-- Task 213 (`rope_half` / `rope_interleaved`), 205 (`sdpa`), 214 (`swiglu_ffn`), 009 (`triangular_mask`)
+- Task 213 (`rope_half` / `rope_scaled_freqs` / `rope_from_freqs`), 205 (`sdpa`), 214 (`swiglu_ffn`), 009 (`triangular_mask`)
 
 **Real-weights layer (B):** `download.sh` fetches `llamafactory/tiny-random-Llama-3`
 (config + safetensors only), maps the HF names → `Llama31Params`, and commits

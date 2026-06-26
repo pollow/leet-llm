@@ -5,14 +5,9 @@ frequencies are **rescaled** by a ``rope_scaling`` schedule so the same
 pretrained weights generalise to far longer contexts.  Everything else —
 GQA, SwiGLU, RMSNorm, rotate-half RoPE — is unchanged from the baseline.
 
-Implement two rope operators in 213_rope:
-
-1. ``rope_scaled_freqs(head_dim, base, scaling)`` — compute the per-pair
-   inverse frequencies ``inv_freq`` for ``default`` (or ``None``) and
-   ``llama3``.  This task focuses on Llama-3.1's native schedule.
-2. ``rope_from_freqs(x, positions, inv_freq)`` — rotate-half RoPE applied with
-   a **precomputed** ``inv_freq`` (213's ``rope_half`` derives the frequencies
-   from ``base`` internally; here the scaled frequencies are passed in).
+This task REUSES RoPE helpers from 213_rope:
+``rope_scaled_freqs`` / ``rope_from_freqs``.
+It also consumes the GQA RoPE hook surface from 215 (``RopeParams`` + ``positions`` wiring).
 
 Refactor 303_llama_model to support new RoPE strategy:
 1. ``llama31_forward`` the Llama-3.1 decoder-only model wired through 303's forward.
@@ -20,17 +15,11 @@ Refactor 303_llama_model to support new RoPE strategy:
 See README.md. Run ``uv run grade 307`` to check your work.
 
 Hints:
-- ``rope_scaled_freqs``: start from the default schedule
-  ``inv_freq = 1 / base**(arange(0, head_dim, 2) / head_dim)``.  Handle
-  ``scaling is None``/``rope_type=default`` as baseline and implement the
-  native Llama-3.1 ``rope_type=llama3`` frequency bend.
-- ``rope_from_freqs``: reuse ``from leet_llm import split_halves`` (011).  Build
-  ``angle = positions[..., None] * inv_freq``, duplicate it
-  (``concat([angle, angle], -1)``), and return ``x*cos + rotate_half(x)*sin``
-  where ``rotate_half(x) = concat([-x2, x1], -1)``.  Identical to 213's
-  ``rope_half`` except the frequencies are supplied, not derived from ``base``.
 - ``llama31_forward``: call ``llama_forward`` (303) directly first so you can observe
   the default behavior; then refactor the reused path to inject the 307 RoPE schedule.
+- TODO(213): ensure long-context RoPE helpers are exposed via ``leet_llm``.
+- TODO(215): ensure GQA accepts ``positions``/``rope_params`` without breaking 215's
+  original tests and behavior when RoPE hook args are omitted.
 """
 
 from __future__ import annotations
@@ -44,81 +33,6 @@ from leet_llm import (
     LlamaParams,
     llama_forward,
 )
-
-
-def rope_scaled_freqs(
-    head_dim: int,
-    base: float,
-    scaling: dict | None = None,
-) -> np.ndarray:
-    """Compute the RoPE inverse frequencies under a ``rope_scaling`` schedule.
-
-    The baseline (``default``) schedule is::
-
-        inv_freq = 1.0 / base ** (arange(0, head_dim, 2) / head_dim)   # (head_dim/2,)
-
-    ``scaling`` selects the schedule via ``scaling["rope_type"]``:
-
-    - ``"default"`` / ``None`` — the baseline above (213's frequencies).
-    - ``"llama3"`` — keep high frequencies, divide low frequencies by ``factor``,
-      smoothly interpolate the medium band (Llama-3.1's schedule).
-
-    Parameters
-    ----------
-    head_dim:
-        Per-head dimension ``d`` (RoPE rotates ``d/2`` pairs).
-    base:
-        RoPE base frequency (``rope_theta``).
-    scaling:
-        ``rope_scaling`` dict.  For ``llama3`` reads:
-        ``factor``, ``low_freq_factor``, ``high_freq_factor``,
-        ``original_max_position_embeddings``.
-
-    Returns
-    -------
-    np.ndarray, shape ``(head_dim / 2,)``
-        The (possibly rescaled) inverse frequencies, float64.
-    """
-    raise NotImplementedError(
-        "Implement rope_scaled_freqs — see 307_llama31_model/README.md"
-    )
-
-
-def rope_from_freqs(
-    x: np.ndarray,
-    positions: np.ndarray,
-    inv_freq: np.ndarray,
-) -> np.ndarray:
-    """Rotate-half RoPE applied with a precomputed ``inv_freq``.
-
-    Identical rotation to 213's ``rope_half`` except the inverse frequencies are
-    supplied (already scaled by ``rope_scaled_freqs``) rather than derived from a
-    ``base``::
-
-        angle = positions[..., None] * inv_freq          # (L, d/2)
-        angle = concat([angle, angle], axis=-1)          # (L, d)
-        out   = x * cos(angle) + rotate_half(x) * sin(angle)
-
-    with ``rotate_half(x) = concat([-x2, x1], axis=-1)`` over the two halves of
-    the last axis.
-
-    Parameters
-    ----------
-    x:
-        Activations whose last axis is ``head_dim``, e.g. ``(B, H, L, head_dim)``.
-    positions:
-        Position indices, shape ``(L,)``.
-    inv_freq:
-        Inverse frequencies, shape ``(head_dim / 2,)``.
-
-    Returns
-    -------
-    np.ndarray
-        ``x`` rotated by RoPE, same shape as ``x``.
-    """
-    raise NotImplementedError(
-        "Implement rope_from_freqs — see 307_llama31_model/README.md"
-    )
 
 
 # ---------------------------------------------------------------------------
@@ -183,7 +97,8 @@ def llama31_forward(
     """Call 303's forward directly as the baseline.
 
     This intentionally shows the default 303 RoPE path first. The 307 task then asks for
-    refactoring the reused block/forward path so scaled rotate-half RoPE can be injected.
+    refactoring the reused block/forward path so scaled rotate-half RoPE can be injected
+    through the existing GQA RoPE hook surface.
     Returns logits of shape ``(B, L, V)``.
     """
     cfg303 = LlamaConfig(

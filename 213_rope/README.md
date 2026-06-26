@@ -21,6 +21,12 @@ interchangeable on the same weights:
 You'll implement **both**, plus a checker for RoPE's defining property. (The capstone L3
 model uses the **interleaved** form; the two are related by permuting the q/k weights.)
 
+For later long-context models, this task also owns reusable RoPE helpers:
+
+- `rope_scaled_freqs(...)` — schedule-aware inverse frequencies (`default`, `llama3`, `yarn`)
+- `rope_attention_scale(...)` — schedule-aware q/k temperature factor (YaRN uses this)
+- `rope_from_freqs(...)` — apply RoPE from precomputed `inv_freq`
+
 ## The Math
 
 For head dim `d` (even), base `θ=10000`, frequency index `i ∈ {0,…,d/2−1}`:
@@ -62,6 +68,20 @@ def rope_half(x: np.ndarray, positions: np.ndarray, base: float = 10000.0) -> np
 
 def rope_qk_dot(q: np.ndarray, k: np.ndarray, m: int, n: int, base: float = 10000.0) -> np.ndarray: ...
 #   q, k: (..., d)   ->   <RoPE(q,m), RoPE(k,n)>  over the last axis  (interleaved)
+
+def rope_scaled_freqs(head_dim: int, base: float, scaling: dict | None = None) -> np.ndarray: ...
+#   schedule-aware inv_freq for long-context RoPE
+
+def rope_attention_scale(scaling: dict | None = None) -> float: ...
+#   schedule-aware attention temperature factor (YaRN uses >1 when factor>1)
+
+def rope_from_freqs(
+    x: np.ndarray,
+    positions: np.ndarray,
+    inv_freq: np.ndarray,
+    pair_type: str = "interleaved",
+) -> np.ndarray: ...
+#   apply interleaved/half RoPE from precomputed inv_freq
 ```
 
 ## Read More
@@ -69,6 +89,7 @@ def rope_qk_dot(q: np.ndarray, k: np.ndarray, m: int, n: int, base: float = 1000
 - *RoFormer*, Su et al. 2021: https://arxiv.org/abs/2104.09864
 - Interleaved layout: Meta's `llama` / `llama3.np` (`apply_rotary_emb`, complex form).
 - Rotate-half layout: HuggingFace `transformers` (`rotate_half`, `apply_rotary_pos_emb`).
+- YaRN: https://arxiv.org/abs/2309.00071
 - You may reuse `from leet_llm import interleave, deinterleave, split_halves, join_halves` (011).
 
 ## How to Test

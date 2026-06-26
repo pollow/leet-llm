@@ -1,6 +1,7 @@
-"""213 — RoPE (Rotary Position Embedding), two conventions + the relative-position checker.
+"""213 — RoPE (Rotary Position Embedding), conventions + reusable long-context helpers.
 
-Implement ``rope_interleaved``, ``rope_half`` and ``rope_qk_dot``. See README.md.
+Implement ``rope_interleaved``, ``rope_half``, ``rope_qk_dot``, and the reusable helpers
+``rope_scaled_freqs`` / ``rope_attention_scale`` / ``rope_from_freqs``. See README.md.
 Run `uv run grade 213` to check your work.
 
 Hint: you may reuse ``from leet_llm import interleave, deinterleave, split_halves,
@@ -75,7 +76,6 @@ def rope_scaled_freqs(
     - ``"default"`` / ``None`` — the baseline above (213's frequencies).
     - ``"llama3"`` — keep high frequencies, divide low frequencies by ``factor``,
       smoothly interpolate the medium band (Llama-3.1's schedule).
-
     Parameters
     ----------
     head_dim:
@@ -116,6 +116,11 @@ def rope_scaled_freqs(
             scaling_factor + s[medium_freq_idx] * inv_freqs[medium_freq_idx]
 
     return inv_freqs
+
+
+def rope_attention_scale(scaling: dict | None = None) -> float:
+    """Return schedule-specific RoPE attention scale."""
+    raise NotImplementedError("Implement rope_attention_scale — see 213_rope/README.md")
 
 
 def rope_from_freqs(

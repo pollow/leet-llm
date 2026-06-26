@@ -83,7 +83,7 @@ def moe_ffn(
     x: np.ndarray,              # (T, d) tokens × dim
     router_weight: np.ndarray,  # (num_experts, d)
     experts: list,              # list[SwiGLUParams], length num_experts
-    top_k: int,
+    num_active_experts: int,
 ) -> np.ndarray:                # (T, d) same shape as x
 ```
 

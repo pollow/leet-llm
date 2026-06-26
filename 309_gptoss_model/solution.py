@@ -30,11 +30,14 @@ Hints:
   (208) → ``rms_norm`` → ``gptoss_moe_ffn`` → residual] → final ``rms_norm`` →
   ``@ lm_head.T``.  Even layers (0, 2, …) use ``sliding_window_mask`` (305); odd layers
   use full causal.
-- **YaRN RoPE (reused from 307):** GPT-OSS's real RoPE is YaRN long-context scaling.
+- **YaRN RoPE (implemented in 213/215, consumed here):** GPT-OSS's real RoPE is
+  YaRN long-context scaling.
   Compute ``inv_freq = rope_scaled_freqs(head_dim, rope_base, cfg.rope_scaling)`` and
   ``af = rope_attention_scale(cfg.rope_scaling)`` once, then rotate q & k with
   ``rope_from_freqs(.., positions, inv_freq) * af`` (rotate-half, NOT
   ``llama_decoder_block`` 216).  ``cfg.rope_scaling=None`` → plain rotate-half RoPE.
+  TODO(rope-track): keep expanding YaRN math/details in RoPE tasks (213/215), not here.
+  TODO(compat): forward changes in 213/215 must preserve their original grade paths.
 """
 
 from __future__ import annotations
@@ -181,7 +184,7 @@ class GptOssConfig:
         Maximum sequence length (position indices).
     rope_scaling:
         GPT-OSS's RoPE schedule — a ``rope_scaling`` dict passed to
-        ``rope_scaled_freqs`` / ``rope_attention_scale`` (307).  GPT-OSS ships
+        ``rope_scaled_freqs`` / ``rope_attention_scale`` (213).  GPT-OSS ships
         ``rope_type="yarn"``; ``None`` falls back to default rotate-half RoPE.
     """
 
@@ -275,8 +278,9 @@ def gptoss_forward(
       → final ``rms_norm`` → ``@ lm_head.T``.
 
     Even-indexed layers (0, 2, …) use ``sliding_window_mask`` (305); odd-indexed
-    layers use full causal.  RoPE is GPT-OSS's real **YaRN** schedule, reused from
-    307: ``inv_freq = rope_scaled_freqs(head_dim, rope_base, cfg.rope_scaling)`` and
+    layers use full causal.  RoPE is GPT-OSS's real **YaRN** schedule, implemented in
+    the RoPE/GQA tasks (213/215): ``inv_freq = rope_scaled_freqs(head_dim, rope_base,
+    cfg.rope_scaling)`` and
     ``af = rope_attention_scale(cfg.rope_scaling)``, applied as
     ``rope_from_freqs(.., positions, inv_freq) * af`` on q & k (rotate-half).  The
     long-context KV-cache (streaming sink eviction) is deferred to L4.

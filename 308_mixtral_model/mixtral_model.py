@@ -33,7 +33,7 @@ def moe_ffn(
     x: np.ndarray,
     router_weight: np.ndarray,
     experts: list,
-    top_k: int,
+    num_active_experts: int,
 ) -> np.ndarray:
     """Sparse mixture-of-experts FFN layer (Mixtral convention).
 
@@ -51,7 +51,7 @@ def moe_ffn(
         ``list[SwiGLUParams]`` of length ``num_experts``.  Each entry holds
         ``(W1, W3, W2)`` for the gate/up/down projections (reuse
         ``swiglu_ffn`` from 214).
-    top_k:
+    num_active_experts:
         Number of experts each token routes to.
 
     Returns

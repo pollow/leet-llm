@@ -66,7 +66,7 @@ def moe_ffn(
         ``list[SwiGLUParams]`` of length ``num_experts``.  Each entry holds
         ``(W1, W3, W2)`` for the gate/up/down projections (reuse
         ``swiglu_ffn`` from 214).
-    top_k:
+    num_active_experts:
         Number of experts each token routes to.
 
     Returns
@@ -86,8 +86,10 @@ def moe_ffn(
     T = x.shape[0]
 
     for t in range(T):
-        for k in range(num_active_experts):
-            out[t] += weights[t, k] * swiglu_ffn(x[t], experts[int(idx[t, k])])
+        for expert_rank in range(num_active_experts):
+            out[t] += weights[t, expert_rank] * swiglu_ffn(
+                x[t], experts[int(idx[t, expert_rank])]
+            )
 
     out = out.reshape(x_shape)
     return out
@@ -118,7 +120,7 @@ class MixtralBlockParams:
 
     attn: AttnParams
     moe: list[SwiGLUParams]
-    moe_router: np.ndarray  # [num_expoerts, d]
+    moe_router: np.ndarray  # [num_experts, d]
     attn_norm: np.ndarray  # RMSNorm weight (d,)
     ffn_norm: np.ndarray  # RMSNorm weight (d,)
 

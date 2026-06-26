@@ -8,11 +8,12 @@ Categories:
      - ``gptoss_moe_ffn`` vs a float64 oracle; routing invariants (depends only on the
        selected top-k; zeroing a non-selected expert is a no-op; the selected gate
        scores sum to 1; the gate/up pre-activations are clamped).
-  2. Whole-model parity (A) — ``gptoss_forward`` vs the composed float64 oracle in
+  2. Cross-task YaRN checks — validate the new 213/215 behavior required by 309.
+  3. Whole-model parity (A) — ``gptoss_forward`` vs the composed float64 oracle in
      ``tiny_gptoss.npz`` at ``rtol=1e-9``.
-  3. Wrinkle isolations observed THROUGH ``gptoss_forward`` (sinks lower the row mass;
+  4. Wrinkle isolations observed THROUGH ``gptoss_forward`` (sinks lower the row mass;
      alternating sliding/full masks; causal; the YaRN RoPE schedule is wired in).
-  4. Real-weights parity (B, skippable) — ``gptoss_forward`` vs ``real_ref.npz`` logits
+  5. Real-weights parity (B, skippable) — ``gptoss_forward`` vs ``real_ref.npz`` logits
      from a genuine ``GptOssForCausalLM`` (native YaRN). Run ``309_gptoss_model/download.sh`` first.
 """
 
@@ -24,6 +25,7 @@ import pathlib
 import numpy as np
 import pytest
 
+from leet_llm import AttnParams, RopeParams, gqa, rope_attention_scale, rope_scaled_freqs
 from leet_llm.grader import load
 
 _m = load(__file__)
@@ -52,6 +54,35 @@ def _softmax(x, axis=-1):
 
 def _sigmoid(x):
     return 1.0 / (1.0 + np.exp(-x))
+
+
+def _yarn_inv_freq_reference(head_dim: int, base: float, sc: dict) -> np.ndarray:
+    """Reference YaRN inverse-frequency schedule used for cross-task wiring checks."""
+    factor = float(sc["factor"])
+    old = float(sc["original_max_position_embeddings"])
+    beta_fast = float(sc.get("beta_fast", 32.0))
+    beta_slow = float(sc.get("beta_slow", 1.0))
+    truncate = bool(sc.get("truncate", True))
+
+    pos_freqs = base ** (np.arange(0, head_dim, 2, dtype=np.float64) / head_dim)
+    extrap = 1.0 / pos_freqs
+    interp = 1.0 / (factor * pos_freqs)
+
+    low = (head_dim * np.log(old / (beta_fast * 2 * np.pi))) / (2 * np.log(base))
+    high = (head_dim * np.log(old / (beta_slow * 2 * np.pi))) / (2 * np.log(base))
+    if truncate:
+        low, high = np.floor(low), np.ceil(high)
+    low = max(low, 0.0)
+    high = min(high, float(head_dim - 1))
+    if low == high:
+        high += 1e-3
+    ramp = np.clip(
+        (np.arange(head_dim // 2, dtype=np.float64) - low) / (high - low),
+        0.0,
+        1.0,
+    )
+    extrap_factor = 1.0 - ramp
+    return interp * (1.0 - extrap_factor) + extrap * extrap_factor
 
 
 def _sinks_oracle(scores, sink_logits, mask=None):
@@ -240,7 +271,67 @@ def test_moe_clamps_preactivations():
 
 
 # ---------------------------------------------------------------------------
-# 2. Whole-model parity — tiny hermetic fixture (always-on)
+# 2. Cross-task YaRN wiring checks (asserted here, not in 213/215)
+# ---------------------------------------------------------------------------
+
+
+def test_213_yarn_freqs_and_scale_match_reference():
+    cfg = _tiny_cfg()
+    sc = cfg.rope_scaling
+    got_freqs = rope_scaled_freqs(cfg.head_dim, cfg.rope_base, sc)
+    ref_freqs = _yarn_inv_freq_reference(cfg.head_dim, cfg.rope_base, sc)
+    np.testing.assert_allclose(got_freqs, ref_freqs, rtol=1e-12, atol=0)
+
+    got_af = rope_attention_scale(sc)
+    ref_af = 0.1 * np.log(float(sc["factor"])) + 1.0
+    np.testing.assert_allclose(got_af, ref_af, rtol=1e-12, atol=0)
+
+
+def test_215_gqa_rope_hook_applies_yarn_scale():
+    cfg = _tiny_cfg()
+    sc = cfg.rope_scaling
+    rng = np.random.default_rng(9)
+
+    B, L, d_model = 1, 5, 16
+    n_heads, n_kv_heads = 4, 2
+    head_dim = d_model // n_heads
+    x = rng.standard_normal((B, L, d_model))
+    params = AttnParams(
+        Wq=rng.standard_normal((d_model, d_model)),
+        Wk=rng.standard_normal((n_kv_heads * head_dim, d_model)),
+        Wv=rng.standard_normal((n_kv_heads * head_dim, d_model)),
+        Wo=rng.standard_normal((d_model, d_model)),
+        bq=rng.standard_normal((d_model,)),
+        bk=rng.standard_normal((n_kv_heads * head_dim,)),
+        bv=rng.standard_normal((n_kv_heads * head_dim,)),
+        bo=rng.standard_normal((d_model,)),
+    )
+    positions = np.arange(L, dtype=np.int64)
+
+    out_default = gqa(
+        x,
+        params,
+        n_heads=n_heads,
+        n_kv_heads=n_kv_heads,
+        positions=positions,
+        rope_params=RopeParams(base=cfg.rope_base, pair_type="half", scaling=None),
+    )
+    out_yarn = gqa(
+        x,
+        params,
+        n_heads=n_heads,
+        n_kv_heads=n_kv_heads,
+        positions=positions,
+        rope_params=RopeParams(base=cfg.rope_base, pair_type="half", scaling=sc),
+    )
+    assert out_default.shape == out_yarn.shape == (B, L, d_model)
+    assert not np.allclose(out_yarn, out_default, atol=1e-6), (
+        "gqa rope_params hook had no effect — YaRN schedule/scale not applied"
+    )
+
+
+# ---------------------------------------------------------------------------
+# 3. Whole-model parity — tiny hermetic fixture (always-on)
 # ---------------------------------------------------------------------------
 
 def _tiny_cfg(rope_scaling="__keep__"):

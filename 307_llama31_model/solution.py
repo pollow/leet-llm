@@ -5,14 +5,9 @@ frequencies are **rescaled** by a ``rope_scaling`` schedule so the same
 pretrained weights generalise to far longer contexts.  Everything else —
 GQA, SwiGLU, RMSNorm, rotate-half RoPE — is unchanged from the baseline.
 
-Implement two rope operators in 213_rope:
-
-1. ``rope_scaled_freqs(head_dim, base, scaling)`` — compute the per-pair
-   inverse frequencies ``inv_freq`` for ``default`` (or ``None``) and
-   ``llama3``.  This task focuses on Llama-3.1's native schedule.
-2. ``rope_from_freqs(x, positions, inv_freq)`` — rotate-half RoPE applied with
-   a **precomputed** ``inv_freq`` (213's ``rope_half`` derives the frequencies
-   from ``base`` internally; here the scaled frequencies are passed in).
+This task REUSES RoPE helpers from 213_rope:
+``rope_scaled_freqs`` / ``rope_from_freqs``.
+It also consumes the GQA RoPE hook surface from 215 (``RopeParams`` + ``positions`` wiring).
 
 Refactor 303_llama_model to support new RoPE strategy:
 1. ``llama31_forward`` the Llama-3.1 decoder-only model wired through 303's forward.
@@ -20,17 +15,11 @@ Refactor 303_llama_model to support new RoPE strategy:
 See README.md. Run ``uv run grade 307`` to check your work.
 
 Hints:
-- ``rope_scaled_freqs``: start from the default schedule
-  ``inv_freq = 1 / base**(arange(0, head_dim, 2) / head_dim)``.  Handle
-  ``scaling is None``/``rope_type=default`` as baseline and implement the
-  native Llama-3.1 ``rope_type=llama3`` frequency bend.
-- ``rope_from_freqs``: reuse ``from leet_llm import split_halves`` (011).  Build
-  ``angle = positions[..., None] * inv_freq``, duplicate it
-  (``concat([angle, angle], -1)``), and return ``x*cos + rotate_half(x)*sin``
-  where ``rotate_half(x) = concat([-x2, x1], -1)``.  Identical to 213's
-  ``rope_half`` except the frequencies are supplied, not derived from ``base``.
 - ``llama31_forward``: call ``llama_forward`` (303) directly first so you can observe
   the default behavior; then refactor the reused path to inject the 307 RoPE schedule.
+- TODO(213): ensure long-context RoPE helpers are exposed via ``leet_llm``.
+- TODO(215): ensure GQA accepts ``positions``/``rope_params`` without breaking 215's
+  original tests and behavior when RoPE hook args are omitted.
 """
 
 from __future__ import annotations
@@ -136,7 +125,8 @@ def llama31_forward(
     """Call 303's forward directly as the baseline.
 
     This intentionally shows the default 303 RoPE path first. The 307 task then asks for
-    refactoring the reused block/forward path so scaled rotate-half RoPE can be injected.
+    refactoring the reused block/forward path so scaled rotate-half RoPE can be injected
+    through the existing GQA RoPE hook surface.
     Returns logits of shape ``(B, L, V)``.
     """
     cfg303 = LlamaConfig(

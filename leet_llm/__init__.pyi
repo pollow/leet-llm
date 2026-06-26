@@ -81,6 +81,7 @@ LlamaBlockParams: Any
 sample: Any
 generate: Any
 rope_scaled_freqs: Any
+rope_attention_scale: Any
 rope_from_freqs: Any
 RopeParams: Any
 
