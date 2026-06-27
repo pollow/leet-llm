@@ -39,6 +39,8 @@ def gqa(
     mask: np.ndarray | None = None,
     positions: np.ndarray | None = None,
     rope_params: RopeParams | None = None,
+    af: float = 1.0,
+    sink_logits: np.ndarray | None = None,
 ) -> np.ndarray:
     """Grouped-query attention; reduces to MHA when ``n_kv_heads == n_heads``."""
     num_group = n_heads // n_kv_heads
@@ -63,7 +65,14 @@ def gqa(
         )
         Q = rope_from_freqs(Q, positions, inv_freqs, rope_params.pair_type)
         K = rope_from_freqs(K, positions, inv_freqs, rope_params.pair_type)
+        Q = Q * af
+        K = K * af
 
-    gqa = ungroup_last_axis(sdpa(Q, K, V, mask).reshape(origin_shape))
+    sink = None
+    if sink_logits is not None:
+        sink = np.asarray(sink_logits).reshape(1, n_kv_heads, num_group, 1, 1)
+    out = sdpa(Q, K, V, mask, sink_logits=sink)
+
+    gqa = ungroup_last_axis(out.reshape(origin_shape))
 
     return affine(gqa, params.Wo, params.bo)

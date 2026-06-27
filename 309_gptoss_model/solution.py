@@ -46,7 +46,21 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from leet_llm import deinterleave, sigmoid, softmax, top_k
+from leet_llm import (
+    AttnParams,
+    RopeParams,
+    add_residual,
+    deinterleave,
+    embedding,
+    gqa,
+    rms_norm,
+    rope_attention_scale,
+    sigmoid,
+    sliding_window_mask,
+    softmax,
+    top_k,
+    triangular_mask,
+)
 
 
 def attention_with_sinks(
@@ -265,7 +279,97 @@ def load_gptoss(weights: dict, cfg: GptOssConfig) -> GptOssParams:
         .mlp.experts.down_proj                   (num_experts, intermediate, d)
         .mlp.experts.down_proj_bias              (num_experts, d)
     """
-    raise NotImplementedError("Implement load_gptoss — see 309_gptoss_model/README.md")
+    def _f(name: str) -> np.ndarray:
+        arr = weights[name]
+        if isinstance(arr, np.ndarray) and np.issubdtype(arr.dtype, np.floating):
+            return arr.astype(np.float64, copy=False)
+        return arr
+
+    tok_embed = _f("model.embed_tokens.weight")
+    final_norm = _f("model.norm.weight")
+    lm_head = _f("lm_head.weight") if "lm_head.weight" in weights else tok_embed
+
+    layers = []
+    for i in range(cfg.n_layers):
+        prefix = f"model.layers.{i}"
+        layers.append(
+            {
+                "attn_norm": _f(f"{prefix}.input_layernorm.weight"),
+                "ffn_norm": _f(f"{prefix}.post_attention_layernorm.weight"),
+                "Wq": _f(f"{prefix}.self_attn.q_proj.weight"),
+                "bq": _f(f"{prefix}.self_attn.q_proj.bias"),
+                "Wk": _f(f"{prefix}.self_attn.k_proj.weight"),
+                "bk": _f(f"{prefix}.self_attn.k_proj.bias"),
+                "Wv": _f(f"{prefix}.self_attn.v_proj.weight"),
+                "bv": _f(f"{prefix}.self_attn.v_proj.bias"),
+                "Wo": _f(f"{prefix}.self_attn.o_proj.weight"),
+                "bo": _f(f"{prefix}.self_attn.o_proj.bias"),
+                "sinks": _f(f"{prefix}.self_attn.sinks"),
+                "router_weight": _f(f"{prefix}.mlp.router.weight"),
+                "router_bias": _f(f"{prefix}.mlp.router.bias"),
+                "gate_up_proj": _f(f"{prefix}.mlp.experts.gate_up_proj"),
+                "gate_up_bias": _f(f"{prefix}.mlp.experts.gate_up_proj_bias"),
+                "down_proj": _f(f"{prefix}.mlp.experts.down_proj"),
+                "down_bias": _f(f"{prefix}.mlp.experts.down_proj_bias"),
+            }
+        )
+
+    return GptOssParams(
+        tok_embed=tok_embed,
+        layers=layers,
+        final_norm=final_norm,
+        lm_head=lm_head,
+    )
+
+def gptoss_decoder_block(
+    x: np.ndarray,
+    layer: dict,
+    cfg: GptOssConfig,
+    positions: np.ndarray,
+    mask: np.ndarray,
+    af: float,
+) -> np.ndarray:
+    """One GPT-OSS block: RoPE-GQA(+sinks) + GPT-OSS MoE with pre-norm residuals."""
+    a = rms_norm(x, layer["attn_norm"], eps=cfg.norm_eps)
+    attn_params = AttnParams(
+        Wq=layer["Wq"],
+        Wk=layer["Wk"],
+        Wv=layer["Wv"],
+        Wo=layer["Wo"],
+        bq=layer["bq"],
+        bk=layer["bk"],
+        bv=layer["bv"],
+        bo=layer["bo"],
+    )
+    attn = gqa(
+        a,
+        attn_params,
+        n_heads=cfg.n_heads,
+        n_kv_heads=cfg.n_kv_heads,
+        mask=mask,
+        positions=positions,
+        rope_params=RopeParams(
+            base=cfg.rope_base,
+            pair_type="half",
+            scaling=cfg.rope_scaling,
+        ),
+        af=af,
+        sink_logits=layer["sinks"],
+    )
+    h = add_residual(x, attn)
+
+    f = rms_norm(h, layer["ffn_norm"], eps=cfg.norm_eps)
+    moe = gptoss_moe_ffn(
+        f,
+        layer["router_weight"],
+        layer["router_bias"],
+        layer["gate_up_proj"],
+        layer["gate_up_bias"],
+        layer["down_proj"],
+        layer["down_bias"],
+        cfg.num_experts_per_tok,
+    )
+    return add_residual(h, moe)
 
 
 def gptoss_forward(
@@ -295,4 +399,17 @@ def gptoss_forward(
     ``rope_from_freqs(.., positions, inv_freq) * af`` on q & k (rotate-half).  The
     long-context KV-cache (streaming sink eviction) is deferred to L4.
     """
-    raise NotImplementedError("Implement gptoss_forward — see 309_gptoss_model/README.md")
+    h = embedding(input_ids, params.tok_embed)
+    L = input_ids.shape[-1]
+    positions = np.arange(start_pos, start_pos + L)
+    full_mask = triangular_mask(L)
+    sliding_mask = sliding_window_mask(L, cfg.sliding_window)
+    af = rope_attention_scale(cfg.rope_scaling)
+
+    for i, layer in enumerate(params.layers):
+        mask = sliding_mask if i % 2 == 0 else full_mask
+        h = gptoss_decoder_block(h, layer, cfg, positions, mask, af)
+
+    h = rms_norm(h, params.final_norm, cfg.norm_eps)
+    logits = h @ params.lm_head.T
+    return logits

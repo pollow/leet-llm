@@ -18,6 +18,7 @@ def sdpa(
     k: np.ndarray, # [..., seq_len, dim_head]
     v: np.ndarray, # [..., seq_len, dim_head]
     mask: np.ndarray | None = None, # [..., seq_len, seq_len]
+    sink_logits: np.ndarray | None = None, # [..., seq_len, 1] broadcastable
 ) -> np.ndarray:
     """Scaled dot-product attention: ``softmax(QKᵀ/√d_k + mask) · V``.
 
@@ -27,5 +28,10 @@ def sdpa(
     score = (q @ np.swapaxes(k, -1, -2)) / np.sqrt(d_k)
     if mask is not None:
         score = masked_fill(score, mask, -np.inf)
-    A = softmax(score)
+    if sink_logits is not None:
+        sink = np.broadcast_to(np.asarray(sink_logits), score.shape[:-1] + (1,))
+        score = np.concatenate([score, sink], axis=-1)
+        A = softmax(score)[..., :-1]
+    else:
+        A = softmax(score)
     return A @ v
