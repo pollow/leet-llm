@@ -15,7 +15,12 @@ import numpy as np
 from leet_llm import deinterleave, interleave, split_halves
 
 
-def calc_angle(dim_head: int, positions: np.ndarray, base: float = 10000.0, inv_freq: np.ndarray = None):
+def calc_angle(
+    dim_head: int,
+    positions: np.ndarray,
+    base: float = 10000.0,
+    inv_freq: np.ndarray = None,
+):
     """Helper class for calculating angle tensor for RoPE."""
     if inv_freq is None:
         idx = np.arange(0, dim_head, 2)  # [0, 2, 4, ..., dim_head]
@@ -23,7 +28,12 @@ def calc_angle(dim_head: int, positions: np.ndarray, base: float = 10000.0, inv_
     return positions[..., None] * inv_freq  # [batch, seq_len, dim_head / 2]
 
 
-def rope_interleaved(x: np.ndarray, positions: np.ndarray, base: float = 10000.0, inv_freq: np.ndarray = None) -> np.ndarray:
+def rope_interleaved(
+    x: np.ndarray,
+    positions: np.ndarray,
+    base: float = 10000.0,
+    inv_freq: np.ndarray = None,
+) -> np.ndarray:
     """RoPE, interleaved (Meta) convention: rotate adjacent pairs (x_2i, x_2i+1)."""
     a, b = deinterleave(x)  # [batch, seq_len, dim_head / 2]
 
@@ -36,7 +46,12 @@ def rope_interleaved(x: np.ndarray, positions: np.ndarray, base: float = 10000.0
     return interleave(out_a, out_b)
 
 
-def rope_half(x: np.ndarray, positions: np.ndarray, base: float = 10000.0, inv_freq: np.ndarray = None) -> np.ndarray:
+def rope_half(
+    x: np.ndarray,
+    positions: np.ndarray,
+    base: float = 10000.0,
+    inv_freq: np.ndarray = None,
+) -> np.ndarray:
     """RoPE, rotate-half (HF) convention: out = x*cos + [-x2, x1]*sin."""
     a, b = split_halves(x)
     rotate_half = np.concatenate([-b, a], axis=-1)
@@ -49,7 +64,9 @@ def rope_half(x: np.ndarray, positions: np.ndarray, base: float = 10000.0, inv_f
     return x * np.cos(angle) + rotate_half * np.sin(angle)
 
 
-def rope_qk_dot(q: np.ndarray, k: np.ndarray, m: int, n: int, base: float = 10000.0) -> np.ndarray:
+def rope_qk_dot(
+    q: np.ndarray, k: np.ndarray, m: int, n: int, base: float = 10000.0
+) -> np.ndarray:
     """Return <RoPE(q, m), RoPE(k, n)> over the last axis (interleaved convention).
 
     Used to verify RoPE's defining property: this depends only on the relative position
@@ -110,24 +127,53 @@ def rope_scaled_freqs(
         high_freq_idx = wavelen < high_freq_wavelen
         medium_freq_idx = ~(low_freq_idx | high_freq_idx)
 
-        s = (O / wavelen - low_freq_factor) / \
-            (high_freq_factor - low_freq_factor)
-        inv_freqs[medium_freq_idx] = (1 - s)[medium_freq_idx] * inv_freqs[medium_freq_idx] / \
-            scaling_factor + s[medium_freq_idx] * inv_freqs[medium_freq_idx]
+        s = (O / wavelen - low_freq_factor) / (high_freq_factor - low_freq_factor)
+        inv_freqs[medium_freq_idx] = (1 - s)[medium_freq_idx] * inv_freqs[
+            medium_freq_idx
+        ] / scaling_factor + s[medium_freq_idx] * inv_freqs[medium_freq_idx]
+
+    if scaling is not None and scaling.get("rope_type", "default") == "yarn":
+        factor = scaling.get("factor")
+        old = scaling["original_max_position_embeddings"]
+        beta_fast = scaling.get("beta_fast", 32.0)
+        beta_slow = scaling.get("beta_slow", 1.0)
+        truncate = scaling.get("truncate", True)
+        d = head_dim
+
+        extrap = inv_freqs
+        interp = inv_freqs / factor
+
+        low = (d * np.log(old / (beta_fast * 2 * np.pi))) / (2 * np.log(base))
+        high = (d * np.log(old / (beta_slow * 2 * np.pi))) / (2 * np.log(base))
+        if truncate:
+            low = np.floor(low)
+            high = np.ceil(high)
+        low = max(low, 0)
+        high = min(high, d - 1)
+        if low == high:
+            high += 1e-3
+
+        ramp = np.clip((np.arange(0, d // 2) - low) / (high - low), 0.0, 1.0)
+        extrap_factor = 1 - ramp
+        inv_freqs = interp * (1 - extrap_factor) + extrap * extrap_factor
 
     return inv_freqs
 
 
 def rope_attention_scale(scaling: dict | None = None) -> float:
     """Return schedule-specific RoPE attention scale."""
-    raise NotImplementedError("Implement rope_attention_scale — see 213_rope/README.md")
+    if scaling is not None and scaling.get("rope_type", "default") == "yarn":
+        factor = scaling.get("factor")
+        if factor > 1:
+            return 0.1 * np.log(factor) + 1.0
+    return 1.0
 
 
 def rope_from_freqs(
     x: np.ndarray,
     positions: np.ndarray,
     inv_freq: np.ndarray,
-    pair_type: str = "interleaved"
+    pair_type: str = "interleaved",
 ) -> np.ndarray:
     """RoPE applied with a precomputed ``inv_freq``.
     Parameters
@@ -150,5 +196,7 @@ def rope_from_freqs(
         return rope_interleaved(x, positions, inv_freq=inv_freq)
     elif pair_type == "half":
         return rope_half(x, positions, inv_freq=inv_freq)
-    
-    raise ValueError(f"Unsupported pair_type ({pair_type})", )
+
+    raise ValueError(
+        f"Unsupported pair_type ({pair_type})",
+    )
