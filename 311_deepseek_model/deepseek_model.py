@@ -1,7 +1,9 @@
 """Task 311: DeepSeek-V3 forward contracts.
 
 This module defines the student-facing APIs for:
+- ``_project_q_low_rank``: internal helper for DeepSeek's low-rank Q projection.
 - ``mla_project``: DeepSeek MLA attention operator.
+- ``deepseek_moe_ffn``: DeepSeek's sigmoid/group-limited MoE operator.
 - ``load_deepseek`` + ``deepseek_forward``: whole-model forward wiring.
 
 The tutorial rationale and step-by-step implementation guidance live in
@@ -16,11 +18,32 @@ from dataclasses import dataclass
 import numpy as np
 
 
+def _project_q_low_rank(
+    x: np.ndarray,
+    layer: dict,
+    cfg: "DeepseekConfig",
+) -> np.ndarray:
+    """Build Q with DeepSeek's low-rank query projection.
+
+    Contract
+    --------
+    Input ``x`` has shape ``(B, L, d)``. Return shape is
+    ``(B, H, L, qk_head_dim)``, where
+    ``qk_head_dim = qk_nope_head_dim + qk_rope_head_dim``.
+
+    Required layer keys: ``q_a_proj``, ``q_a_layernorm``, ``q_b_proj``.
+    """
+    raise NotImplementedError(
+        "Implement _project_q_low_rank — see 311_deepseek_model/README.md"
+    )
+
+
 def mla_project(
     x: np.ndarray,
     layer: dict,
     cfg: "DeepseekConfig",
     positions: np.ndarray,
+    mask: np.ndarray,
 ) -> np.ndarray:
     """Compute one DeepSeek MLA attention block output.
 
@@ -47,6 +70,24 @@ def mla_project(
     - Use causal scaled-dot-product attention before ``o_proj``.
     """
     raise NotImplementedError("Implement mla_project — see 311_deepseek_model/README.md")
+
+
+def deepseek_moe_ffn(
+    x: np.ndarray,
+    layer: dict,
+    cfg: "DeepseekConfig",
+) -> np.ndarray:
+    """Compute DeepSeek's MoE FFN block.
+
+    Required invariants
+    -------------------
+    - Use sigmoid router scores, not softmax.
+    - Add ``e_score_correction_bias`` only for expert selection.
+    - Restrict routing with group-limited top-k.
+    - Weight selected experts with the unbiased sigmoid scores.
+    - Add the always-on shared experts branch.
+    """
+    raise NotImplementedError("Implement deepseek_moe_ffn — see 311_deepseek_model/README.md")
 
 
 # ---------------------------------------------------------------------------
@@ -129,7 +170,7 @@ def deepseek_forward(
     2. ``mla_project``
     3. residual add
     4. post-attn RMSNorm
-    5. dense SwiGLU (``i < first_k_dense_replace``) or DeepSeek MoE
+    5. dense SwiGLU (``i < first_k_dense_replace``) or ``deepseek_moe_ffn``
     6. residual add
 
     Then apply final RMSNorm and project with ``lm_head.T``.

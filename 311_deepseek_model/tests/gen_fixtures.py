@@ -156,7 +156,7 @@ def _mla_np(
     q_full = np.concatenate([q_nope, q_rope], axis=-1)   # (B, H, L, QK_HEAD)
     k_full = np.concatenate([k_nope, k_rope], axis=-1)   # (B, H, L, QK_HEAD)
 
-    # Causal additive mask
+    # Causal mask, represented as score bias inside this oracle.
     rows = np.arange(Lseq)[:, None]
     cols = np.arange(Lseq)[None, :]
     mask = np.where(rows >= cols, 0.0, -np.inf).astype(np.float64)   # (L, L)

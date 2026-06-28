@@ -25,15 +25,15 @@ By the end of this task, you should be able to:
 | Attention projection | Full per-head `K` and `V` directly from hidden states | MLA: latent compression (`kv_a`) then reconstruction (`kv_b`) | `mla_project` |
 | Positional channels | RoPE applied to full Q/K head channels | RoPE only on rope slices; nope slices stay content-only | `mla_project` |
 | FFN policy | Single FFN style per layer region | Early layers dense SwiGLU, later layers DeepSeek MoE | `deepseek_forward` |
-| MoE routing | Standard top-k pattern | Sigmoid + selection bias + group-limited top-k + shared experts | `deepseek_forward` |
+| MoE routing | Standard top-k pattern | Sigmoid + selection bias + group-limited top-k + shared experts | `deepseek_moe_ffn` |
 
 ### Prerequisite checklist (must already work)
 
 - `rms_norm` (`212`)
+- `sigmoid` (`202`)
 - `rope_half` (`213`)
 - `sdpa` (`205`) with **boolean causal mask** (`True = blocked`, `False = visible`)
 - `swiglu_ffn` (`214`)
-- `moe_ffn` dispatch core (`308`)
 - `embedding`, `triangular_mask`, `add_residual` (`201`, `009`, `208`)
 
 ### Terminology primer
@@ -56,7 +56,7 @@ By the end of this task, you should be able to:
 
 ## The Math
 
-We structure this as four teaching units:
+We structure this as five teaching units:
 
 - Unit A: Why DeepSeek-V3 changes the baseline
 - Unit B: Low-rank Q projection (separate from MLA core)
@@ -88,14 +88,15 @@ DeepSeek-V3/V3.1 mainstream checkpoints use low-rank Q projection:
 2. `qa_norm = rms_norm(qa, q_a_layernorm)`
 3. `q = qa_norm @ q_b_proj.T`
 
-Why this section is separate:
-- Conceptually, this is a **Q-parameterization choice**.
-- MLA core value is still KV latent compression + decoupled RoPE.
-- Keeping them separate helps students avoid mistaking "low-rank Q" for "all of MLA".
+What you should implement first:
+- Load the low-rank Q weights: `q_a_proj`, `q_a_layernorm`, and `q_b_proj`.
+- Implement `_project_q_low_rank`: compute `qa`, normalize it, then project it
+  back to full Q width and reshape to `(B, H, L, qk_head_dim)`.
+- Treat this as the way 311 builds Q before the MLA split into `q_nope | q_rope`.
 
-Implementation contract for this course revision:
-- `load_deepseek` only loads the low-rank Q path weights (`q_a_proj`, `q_a_layernorm`, `q_b_proj`).
-- `mla_project` builds `q` from this low-rank path.
+The reason to learn this before MLA: it is a small, local projection block. Once
+`q` has shape `(B, H, L, qk_head_dim)`, the rest of MLA can treat it like any
+other attention query tensor.
 
 Direct path supplement (for comparison only):
 - Some reference implementations expose `q = x @ q_proj.T` as an optional fallback.
@@ -118,9 +119,19 @@ Given `x: (B, L, d)`, return attention output `y: (B, L, d)`.
 #### What (contracts)
 
 - `qk_head_dim = qk_nope_head_dim + qk_rope_head_dim`
-- `kv_a_proj_with_mqa` outputs `(kv_lora_rank + qk_rope_head_dim)` per token:
-  - front part -> latent `c_kv`
-  - tail part -> shared `k_rope`
+- `kv_a_proj_with_mqa` is one linear projection from the hidden state `x`.
+  For each token, it produces one combined vector:
+  `compressed = x @ kv_a_proj_with_mqa.T`.
+- The last dimension of `compressed` has width `kv_lora_rank + qk_rope_head_dim`.
+  Split that last dimension into two slices:
+  - `c_kv = compressed[..., :kv_lora_rank]`
+  - `k_rope = compressed[..., kv_lora_rank:]`
+- `c_kv` is the compressed content latent. It is not yet per-head K/V; you must
+  normalize it and pass it through `kv_b_proj` to reconstruct per-head `k_nope`
+  and `v`.
+- `k_rope` is the shared positional key slice. It is already the right RoPE
+  width, but it is shared across heads, so later you reshape it to
+  `(B, 1, L, qk_rope_head_dim)` and broadcast across `H` heads.
 - `k_rope` is shared across heads before broadcast: `(B, 1, L, qk_rope_head_dim)`
 
 #### Mini numeric example
@@ -138,8 +149,8 @@ This is the core compression intuition.
 #### How (ordered implementation steps)
 
 1. Build Q branch:
-   - `qa = x @ q_a_proj.T -> rms_norm -> q = qa @ q_b_proj.T`
-2. Reshape `q -> (B, H, L, qk_head_dim)` and split into `q_nope | q_rope`.
+   - `q = _project_q_low_rank(x, layer, cfg)`
+2. Split `q` into `q_nope | q_rope`.
 3. Build KV latent branch:
    - `compressed = x @ kv_a_proj_with_mqa.T`
    - split `compressed -> c_kv | k_rope`
@@ -150,8 +161,9 @@ This is the core compression intuition.
    - `q_full = concat(q_nope, q_rope)`
    - `k_full = concat(k_nope, k_rope)`
 7. Run SDPA with:
-   - scale `qk_head_dim**(-0.5)` (plus mscale adjustment for yarn configs),
-   - **boolean causal mask** (`True = blocked`).
+   - `sdpa(q_full, k_full, v, causal_bool_mask)`.
+   - `sdpa` applies `1 / sqrt(qk_head_dim)` internally.
+   - The mask is boolean (`True = blocked`).
 8. Merge heads and project with `o_proj`.
 
 #### Check (before moving on)
@@ -162,7 +174,7 @@ This is the core compression intuition.
 
 ---
 
-### Unit D — DeepSeek MoE in `deepseek_forward`
+### Unit D — DeepSeek MoE (`deepseek_moe_ffn`)
 
 #### Why this routing design?
 
@@ -174,6 +186,8 @@ This is the core compression intuition.
 #### Purpose
 
 For layers `i >= first_k_dense_replace`, replace dense FFN with DeepSeek MoE behavior.
+Implement this as a separate `deepseek_moe_ffn` operator first, then call it from
+`deepseek_forward`.
 
 #### What (contracts)
 
@@ -191,21 +205,25 @@ For each token:
 2. Compute `scores_biased = scores + e_score_correction_bias`.
 3. Use `scores_biased` for group filtering and top-k selection.
 4. Gather token weights from **unbiased** `scores` at selected indices.
-5. Normalize (if `norm_topk_prob`) and apply `routed_scaling_factor`.
+5. Normalize and apply `routed_scaling_factor`.
 6. Add shared expert dense output.
 
 Critical invariant: **biased scores choose experts; unbiased scores weight experts.**
 
+This is not the same operator as `308`'s `moe_ffn`: Mixtral uses softmax routing
+over all experts, while DeepSeek uses sigmoid scores, selection bias, group-limited
+top-k, and shared experts.
+
 #### How (ordered implementation steps)
 
-1. Compute sigmoid scores.
+1. Compute scores with `sigmoid(x @ gate.T)`.
 2. Add selection bias only for routing decisions.
 3. Group-limited selection:
    - reshape by groups,
-   - score groups,
-   - keep top groups,
+   - use `top_k` to score groups,
+   - use `top_k` again to keep top groups,
    - mask other groups out,
-   - select top experts.
+   - use `top_k` on the masked scores to select top experts.
 4. Gather unbiased selected weights.
 5. Normalize and scale weights.
 6. Dispatch to routed experts.
@@ -230,16 +248,17 @@ Use one deterministic order and do not improvise.
 
 1. `h = embedding(input_ids, tok_embed)`
 2. `positions = arange(start_pos, start_pos + L)`
-3. For each layer `i`:
+3. `causal_bool_mask = triu(ones((L, L), bool), k=1)`
+4. For each layer `i`:
    - `h_attn_in = rms_norm(h, input_layernorm)`
-   - `attn_out = mla_project(h_attn_in, layer, cfg, positions)`
+   - `attn_out = mla_project(h_attn_in, layer, cfg, positions, causal_bool_mask)`
    - `h = add_residual(h, attn_out)`
    - `h_ffn_in = rms_norm(h, post_attention_layernorm)`
    - if `i < first_k_dense_replace`: dense `swiglu_ffn`
-   - else: DeepSeek MoE
+   - else: `deepseek_moe_ffn(h_ffn_in, layer, cfg)`
    - `h = add_residual(h, ffn_out)`
-4. `h = rms_norm(h, final_norm)`
-5. `logits = h @ lm_head.T`
+5. `h = rms_norm(h, final_norm)`
+6. `logits = h @ lm_head.T`
 
 #### Cross-task dependency contract
 
@@ -248,8 +267,7 @@ Use one deterministic order and do not improvise.
 | `rms_norm` | `212` | pre-attn, post-attn, final norm |
 | `rope_half` | `213` | only rope slices (`q_rope`, `k_rope`) |
 | SDPA + mask policy | `205` + `009` | scaled attention with boolean causal mask |
-| `swiglu_ffn` | `214` | dense branch for early layers |
-| `moe_ffn` core | `308` | routed expert dispatch core under DeepSeek routing policy |
+| `swiglu_ffn` | `214` | dense branch for early layers and shared experts |
 
 #### Compatibility constraints
 
@@ -263,11 +281,45 @@ Use one deterministic order and do not improvise.
 ## Function Signature
 
 ```python
+def _project_q_low_rank(
+    x: np.ndarray,      # (B, L, d)
+    layer: dict,        # contains q_a_proj, q_a_layernorm, q_b_proj
+    cfg: DeepseekConfig,
+) -> np.ndarray:        # (B, H, L, qk_head_dim)
+```
+
+This is a private helper for the task, not a registry export. Implement it first,
+then call it from `mla_project`.
+
+```python
+def load_deepseek(
+    weights: dict,
+    cfg: DeepseekConfig,
+) -> DeepseekParams:
+```
+
+`load_deepseek` maps HF-style weight names into the internal per-layer dicts.
+For Q projection, 311 expects the low-rank path only:
+
+- `model.layers.{i}.self_attn.q_a_proj.weight`
+- `model.layers.{i}.self_attn.q_a_layernorm.weight`
+- `model.layers.{i}.self_attn.q_b_proj.weight`
+
+```python
 def mla_project(
     x: np.ndarray,          # (B, L, d)
     layer: dict,            # per-layer MLA weights from load_deepseek
     cfg: DeepseekConfig,
     positions: np.ndarray,  # (L,) integer positions
+    mask: np.ndarray,       # (L, L) boolean mask; True = blocked
+) -> np.ndarray:            # (B, L, d)
+```
+
+```python
+def deepseek_moe_ffn(
+    x: np.ndarray,          # (B, L, d)
+    layer: dict,            # per-layer MoE weights from load_deepseek
+    cfg: DeepseekConfig,
 ) -> np.ndarray:            # (B, L, d)
 ```
 
@@ -310,6 +362,7 @@ uv run grade 311 -v
 
 1. **Operator parity**
    - `test_mla_project_matches_oracle`
+   - `test_deepseek_moe_ffn_matches_oracle`
 2. **Cross-task wiring checks**
    - `test_mla_kv_lora_rank_is_compressed`
    - `test_mla_rope_slice_carries_position`

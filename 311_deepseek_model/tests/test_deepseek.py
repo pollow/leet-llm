@@ -7,8 +7,8 @@ Four categories:
      (a) latent rank ``kv_lora_rank < n_kv_heads*head_dim`` (structural check via forward diff).
      (b) decoupled RoPE slice carries position: shifting positions changes logits,
          but zeroing k_rope weights makes them position-insensitive.
-     (c) direct unit test of ``mla_project`` vs a float64 oracle slice.
-  3. MoE invariants observed THROUGH ``deepseek_forward``:
+     (c) unit test of low-rank-Q ``mla_project`` vs a float64 oracle slice.
+  3. DeepSeek MoE operator tests — direct oracle slice plus routing invariants:
      (a) shared experts always contribute (zeroing shared weights changes the output).
      (b) changing a non-selected expert's weights is a no-op.
   4. Real-weights parity (B, skippable) — ``deepseek_forward`` vs ``real_ref.npz``
@@ -28,6 +28,7 @@ from leet_llm.grader import load
 
 _m = load(__file__)
 mla_project = _m.mla_project
+deepseek_moe_ffn = _m.deepseek_moe_ffn
 DeepseekConfig = _m.DeepseekConfig
 DeepseekParams = _m.DeepseekParams
 load_deepseek = _m.load_deepseek
@@ -70,6 +71,33 @@ def _tiny_cfg() -> DeepseekConfig:
 
 def _tiny_params() -> DeepseekParams:
     return load_deepseek({k: _TINY[k] for k in _TINY.files}, _tiny_cfg())
+
+
+def _causal_mask(L: int) -> np.ndarray:
+    """Boolean attention mask with True marking future positions to block."""
+    return np.triu(np.ones((L, L), dtype=bool), k=1)
+
+
+def _tiny_moe_layer(cfg: DeepseekConfig) -> dict[str, np.ndarray]:
+    i = cfg.first_k_dense_replace
+    p = f"model.layers.{i}"
+    return {
+        "gate": _TINY[f"{p}.mlp.gate.weight"].astype(np.float64),
+        "e_score_correction_bias": _TINY[
+            f"{p}.mlp.gate.e_score_correction_bias"
+        ].astype(np.float64),
+        "experts_gate_up_proj": _TINY[f"{p}.mlp.experts.gate_up_proj"].astype(np.float64),
+        "experts_down_proj": _TINY[f"{p}.mlp.experts.down_proj"].astype(np.float64),
+        "shared_gate_proj": _TINY[
+            f"{p}.mlp.shared_experts.gate_proj.weight"
+        ].astype(np.float64),
+        "shared_up_proj": _TINY[
+            f"{p}.mlp.shared_experts.up_proj.weight"
+        ].astype(np.float64),
+        "shared_down_proj": _TINY[
+            f"{p}.mlp.shared_experts.down_proj.weight"
+        ].astype(np.float64),
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -176,6 +204,63 @@ def _mla_oracle_np(
     return attn_out @ o_proj.T
 
 
+def _silu_np(x: np.ndarray) -> np.ndarray:
+    return x / (1.0 + np.exp(-x))
+
+
+def _deepseek_moe_oracle_np(x: np.ndarray, layer: dict, cfg: DeepseekConfig) -> np.ndarray:
+    """Float64 DeepSeek MoE oracle: sigmoid routing, group top-k, shared experts."""
+    orig_shape = x.shape
+    d = orig_shape[-1]
+    x_flat = x.reshape((-1, d))
+    T = x_flat.shape[0]
+
+    scores = 1.0 / (1.0 + np.exp(-(x_flat @ layer["gate"].T)))
+    scores_biased = scores + layer["e_score_correction_bias"]
+
+    experts_per_group = cfg.n_routed_experts // cfg.n_group
+    group_view = scores_biased.reshape(T, cfg.n_group, experts_per_group)
+    group_top = min(2, experts_per_group)
+    group_idx = np.argsort(group_view, axis=-1)[..., ::-1][..., :group_top]
+    group_scores = np.take_along_axis(group_view, group_idx, axis=-1).sum(axis=-1)
+    top_group_idx = np.argsort(group_scores, axis=-1)[:, ::-1][:, :cfg.topk_group]
+
+    group_mask = np.zeros((T, cfg.n_group), dtype=bool)
+    np.put_along_axis(group_mask, top_group_idx, True, axis=1)
+    expert_mask = np.broadcast_to(
+        group_mask[:, :, None],
+        (T, cfg.n_group, experts_per_group),
+    ).reshape(T, cfg.n_routed_experts)
+
+    masked_scores = np.where(expert_mask, scores_biased, -np.inf)
+    topk_indices = np.argsort(masked_scores, axis=-1)[:, ::-1][:, :cfg.num_experts_per_tok]
+    topk_weights = scores[np.arange(T)[:, None], topk_indices]
+    if cfg.norm_topk_prob:
+        topk_weights = topk_weights / (topk_weights.sum(axis=-1, keepdims=True) + 1e-20)
+    topk_weights = topk_weights * cfg.routed_scaling_factor
+
+    routed = np.zeros_like(x_flat)
+    gate_up = layer["experts_gate_up_proj"]
+    down = layer["experts_down_proj"]
+    ffn_dim = cfg.moe_intermediate_size
+    for k in range(cfg.num_experts_per_tok):
+        expert_idx = topk_indices[:, k]
+        weights = topk_weights[:, k]
+        for e in range(cfg.n_routed_experts):
+            tok_mask = expert_idx == e
+            if not tok_mask.any():
+                continue
+            gu = x_flat[tok_mask] @ gate_up[e].T
+            gate, up = gu[:, :ffn_dim], gu[:, ffn_dim:]
+            routed[tok_mask] += (_silu_np(gate) * up) @ down[e].T * weights[tok_mask, None]
+
+    shared = (
+        _silu_np(x @ layer["shared_gate_proj"].T)
+        * (x @ layer["shared_up_proj"].T)
+    ) @ layer["shared_down_proj"].T
+    return routed.reshape(orig_shape) + shared
+
+
 # ---------------------------------------------------------------------------
 # A. Whole-model parity — tiny hermetic fixture (always-on)
 # ---------------------------------------------------------------------------
@@ -203,7 +288,7 @@ def test_deepseek_causal():
 
 
 # ---------------------------------------------------------------------------
-# MLA unit test — direct float64 oracle slice
+# MLA unit test — low-rank-Q float64 oracle slice
 # ---------------------------------------------------------------------------
 
 def test_mla_project_matches_oracle():
@@ -242,7 +327,8 @@ def test_mla_project_matches_oracle():
     }
     positions = np.arange(L)
 
-    out = mla_project(x, layer, cfg, positions)
+    mask = _causal_mask(L)
+    out = mla_project(x, layer, cfg, positions, mask)
     ref = _mla_oracle_np(
         x, kv_a_proj, kv_a_norm_w, kv_b_proj, q_a_proj, q_a_norm_w, q_b_proj, o_proj,
         H, QK_NOPE, QK_ROPE, V_HD, KV_LORA,
@@ -328,9 +414,10 @@ def test_mla_rope_slice_carries_position():
     # Uniform positions (step 1) vs doubled-step positions (step 2)
     pos_unit = np.arange(0, L, dtype=np.int64)          # [0, 1, 2, 3, 4]
     pos_doubled = np.arange(0, 2 * L, 2, dtype=np.int64)  # [0, 2, 4, 6, 8]
+    mask = _causal_mask(L)
 
-    out_unit = mla_project(x, layer, cfg, pos_unit)
-    out_doubled = mla_project(x, layer, cfg, pos_doubled)
+    out_unit = mla_project(x, layer, cfg, pos_unit, mask)
+    out_doubled = mla_project(x, layer, cfg, pos_doubled, mask)
 
     assert out_unit.shape == (1, L, cfg.dim), f"Wrong shape: {out_unit.shape}"
     assert not np.allclose(out_unit, out_doubled, atol=1e-6), (
@@ -346,8 +433,8 @@ def test_mla_rope_slice_carries_position():
     layer_norope = dict(layer)
     layer_norope["kv_a_proj"] = kv_a_zeroed
 
-    out_norope_unit = mla_project(x, layer_norope, cfg, pos_unit)
-    out_norope_doubled = mla_project(x, layer_norope, cfg, pos_doubled)
+    out_norope_unit = mla_project(x, layer_norope, cfg, pos_unit, mask)
+    out_norope_doubled = mla_project(x, layer_norope, cfg, pos_doubled, mask)
 
     # With k_rope=0, at least k carries no positional info; outputs may still differ
     # because q_rope is position-dependent. But the diff should change from baseline.
@@ -363,31 +450,38 @@ def test_mla_rope_slice_carries_position():
 
 
 # ---------------------------------------------------------------------------
-# MoE invariants observed THROUGH deepseek_forward
+# MoE unit tests
 # ---------------------------------------------------------------------------
+
+def test_deepseek_moe_ffn_matches_oracle():
+    """deepseek_moe_ffn must match the float64 DeepSeek routing reference."""
+    cfg = _tiny_cfg()
+    layer = _tiny_moe_layer(cfg)
+    rng = np.random.default_rng(123)
+    x = rng.standard_normal((2, 3, cfg.dim))
+
+    out = deepseek_moe_ffn(x, layer, cfg)
+    ref = _deepseek_moe_oracle_np(x, layer, cfg)
+
+    assert out.shape == x.shape
+    np.testing.assert_allclose(out, ref, rtol=1e-9, atol=1e-9)
+
 
 def test_moe_shared_experts_always_contribute():
     """Zeroing shared expert weights must change the MoE layer output.
 
-    Observed THROUGH deepseek_forward.
+    Observed THROUGH deepseek_moe_ffn.
     """
     cfg = _tiny_cfg()
-    W = {k: _TINY[k] for k in _TINY.files}
-    ids = _TINY["input_ids"]
+    layer = _tiny_moe_layer(cfg)
+    layer_no_shared = dict(layer)
+    for key in ("shared_gate_proj", "shared_up_proj", "shared_down_proj"):
+        layer_no_shared[key] = np.zeros_like(layer[key])
 
-    # Find the first MoE layer
-    first_moe = cfg.first_k_dense_replace
-
-    # Perturb shared experts in that layer
-    W_no_shared = dict(W)
-    for nm in ("gate_proj.weight", "up_proj.weight", "down_proj.weight"):
-        key = f"model.layers.{first_moe}.mlp.shared_experts.{nm}"
-        W_no_shared[key] = np.zeros_like(W[key])
-
-    p_base = load_deepseek(W, cfg)
-    p_noshared = load_deepseek(W_no_shared, cfg)
-    out_base = deepseek_forward(ids, p_base, cfg)
-    out_noshared = deepseek_forward(ids, p_noshared, cfg)
+    rng = np.random.default_rng(456)
+    x = rng.standard_normal((2, 3, cfg.dim))
+    out_base = deepseek_moe_ffn(x, layer, cfg)
+    out_noshared = deepseek_moe_ffn(x, layer_no_shared, cfg)
 
     assert not np.allclose(out_base, out_noshared, atol=1e-6), (
         "Zeroing shared expert weights had no effect — shared experts not implemented"
@@ -395,43 +489,26 @@ def test_moe_shared_experts_always_contribute():
 
 
 def test_moe_non_selected_expert_noop():
-    """Zeroing a non-selected expert's weights must not change the forward output.
+    """Zeroing a non-selected expert's weights must not change the MoE output.
 
-    We manually compute which expert is NOT selected for any token, then zero it.
-    Observed THROUGH deepseek_forward.
+    Observed THROUGH deepseek_moe_ffn.
     """
     cfg = _tiny_cfg()
-    W = {k: _TINY[k] for k in _TINY.files}
-    ids = _TINY["input_ids"]
-
-    first_moe = cfg.first_k_dense_replace
-    # Load base params and run forward
-    p_base = load_deepseek(W, cfg)
-    out_base = deepseek_forward(ids, p_base, cfg)
-
-    # Determine which experts get selected for the MoE layer
-    # We need the hidden state at that layer — use the tiny fixture weights
-    # Instead, we'll try all 4 experts and zero each, check if any is a no-op
-    NE = cfg.n_routed_experts
-    NK = cfg.num_experts_per_tok
+    layer = _tiny_moe_layer(cfg)
+    x = np.zeros((2, 3, cfg.dim), dtype=np.float64)
+    out_base = deepseek_moe_ffn(x, layer, cfg)
     found_noop = False
 
-    # Compute routing manually to find a non-selected expert
-    # We need the hidden state before the MoE layer — approximate via fixture input
-    # Instead: use sigmoid routing scores to find non-selected experts
-    # For the tiny config, some experts may not be selected across all tokens
-
-    for e_try in range(NE):
-        W_zeroed = dict(W)
-        gate_up = W[f"model.layers.{first_moe}.mlp.experts.gate_up_proj"].copy()
-        down = W[f"model.layers.{first_moe}.mlp.experts.down_proj"].copy()
+    for e_try in range(cfg.n_routed_experts):
+        layer_zeroed = dict(layer)
+        gate_up = layer["experts_gate_up_proj"].copy()
+        down = layer["experts_down_proj"].copy()
         gate_up[e_try] = 0.0
         down[e_try] = 0.0
-        W_zeroed[f"model.layers.{first_moe}.mlp.experts.gate_up_proj"] = gate_up
-        W_zeroed[f"model.layers.{first_moe}.mlp.experts.down_proj"] = down
+        layer_zeroed["experts_gate_up_proj"] = gate_up
+        layer_zeroed["experts_down_proj"] = down
 
-        p_zeroed = load_deepseek(W_zeroed, cfg)
-        out_zeroed = deepseek_forward(ids, p_zeroed, cfg)
+        out_zeroed = deepseek_moe_ffn(x, layer_zeroed, cfg)
 
         if np.allclose(out_base, out_zeroed, atol=1e-9):
             found_noop = True
