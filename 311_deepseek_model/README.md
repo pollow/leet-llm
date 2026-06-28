@@ -2,177 +2,261 @@
 
 ## Description
 
-This task starts from the Llama-style decoder assembly you already built and
-adds the two DeepSeek-V3 deltas that materially change forward behavior:
-MLA (low-rank KV + decoupled RoPE slice) and DeepSeek MoE (sigmoid routing,
-selection bias, group-limited top-k, always-on shared experts).
+This README is designed as a short lecture for students who completed `310` and
+all prerequisites before it. The goal is not to copy formulas, but to understand
+which modeling decisions DeepSeek-V3 changes, and then implement them cleanly.
 
-This task is **forward-only arithmetic**. You are not building cache management,
-kernel fusion, or serving optimizations here.
+### Learning goals
 
-### Baseline and delta map
+By the end of this task, you should be able to:
 
-| Component | Baseline behavior | Task delta | Where wired |
+1. Explain why MLA replaces full per-head KV storage with latent KV compression.
+2. Explain what "decoupled RoPE slices" means in tensor terms.
+3. Implement DeepSeek MoE routing where:
+   - selection uses biased scores,
+   - weighting uses unbiased scores,
+   - shared experts are always active.
+4. Wire the full forward pass in a deterministic, testable order.
+
+### From 310 to 311: what changes?
+
+| Component | In 310-style baseline | In 311 (DeepSeek-V3) | Where you code it |
 |---|---|---|---|
-| Attention projection | Full per-head K/V projections | MLA: `kv_a_proj_with_mqa` latent compression + `kv_b_proj` reconstruction | `mla_project` |
-| Positional encoding in attention | RoPE applied on whole Q/K heads | Decoupled RoPE: apply `rope_half` only to rope slices (`q_rope`, shared `k_rope`) | `mla_project` |
-| FFN per layer | Same FFN type for all layers | Hybrid FFN: dense SwiGLU for early layers, DeepSeek MoE for later layers | `deepseek_forward` |
-| MoE routing | Softmax top-k (Mixtral style) | Sigmoid scores + additive selection bias + group-limited top-k | `deepseek_forward` (via `moe_ffn`) |
-| Shared experts | Optional/absent in baseline tracks | Always-on shared SwiGLU branch added to routed MoE output | `deepseek_forward` |
+| Attention projection | Full per-head `K` and `V` directly from hidden states | MLA: latent compression (`kv_a`) then reconstruction (`kv_b`) | `mla_project` |
+| Positional channels | RoPE applied to full Q/K head channels | RoPE only on rope slices; nope slices stay content-only | `mla_project` |
+| FFN policy | Single FFN style per layer region | Early layers dense SwiGLU, later layers DeepSeek MoE | `deepseek_forward` |
+| MoE routing | Standard top-k pattern | Sigmoid + selection bias + group-limited top-k + shared experts | `deepseek_forward` |
 
-### Prerequisite checklist
+### Prerequisite checklist (must already work)
 
-Before implementing 311, ensure these operators already work in your stack:
+- `rms_norm` (`212`)
+- `rope_half` (`213`)
+- `sdpa` (`205`) with **boolean causal mask** (`True = blocked`, `False = visible`)
+- `swiglu_ffn` (`214`)
+- `moe_ffn` dispatch core (`308`)
+- `embedding`, `triangular_mask`, `add_residual` (`201`, `009`, `208`)
 
-- `rms_norm(x, weight, eps)` returns shape-preserving normalized activations.
-- `rope_half(x, positions, base)` uses rotate-half convention on last dim.
-- `sdpa(q, k, v, mask, scale)` supports causal boolean mask + scaling.
-- `swiglu_ffn(x, gate_proj, up_proj, down_proj)` is numerically stable.
-- `moe_ffn(...)` supports token-to-expert dispatch with top-k routing.
-- `embedding`, `add_residual`, and `triangular_mask` follow prior tasks.
+### Terminology primer
+
+- **Full KV heads**: each token produces full K and V channels for every head.
+  If `H` heads and `qk_head_dim = qk_nope_head_dim + qk_rope_head_dim`, then full
+  K width per token is `H * qk_head_dim`; V width is `H * v_head_dim`.
+- **Latent KV**: a smaller vector `c_kv` that is later expanded to per-head K/V.
+- **RoPE slice** (`qk_rope_head_dim`): channels that carry positional phase (RoPE applied).
+- **NOPE slice** (`qk_nope_head_dim`): channels that keep non-positional content features.
+- **Decoupled RoPE**: apply RoPE to rope slices only; do not rotate NOPE channels.
 
 ### Out of scope
 
-- Latent-KV cache layout and paged cache updates (L4 topic).
-- `rope_interleave=True` / extended YaRN implementations.
-- Training/backprop behavior.
+- KV-cache systems and paged attention runtime mechanics (L4 scope).
+- `rope_interleave=True` and full YaRN/interleaved variants.
+- Training/backward pass.
 
 ---
 
 ## The Math
 
-### Step-by-step implementation path
+We structure this as four teaching units:
 
-### Step 1 — Implement `mla_project`
+- Unit A: Why DeepSeek-V3 changes the baseline
+- Unit B: Low-rank Q projection (separate from MLA core)
+- Unit C: MLA implementation
+- Unit D: DeepSeek MoE routing
+- Unit E: Full-model assembly
 
-**Why add this?**
-- Full K/V heads are memory-heavy at long context; MLA reduces KV footprint with
-  latent compression while preserving per-head attention behavior after reconstruction.
-- Decoupled RoPE lets DeepSeek keep positional signal in a dedicated rope slice.
-- Tradeoff: more projection bookkeeping (split/concat/broadcast) and stricter shape checks.
+### Unit A — Why these two deltas exist
 
-**Purpose**
-- Produce one layer's attention output `y` with shape `(B, L, d)` using DeepSeek MLA.
+**Problem 1: Full KV is expensive.**  
+Long-context inference is often bottlenecked by KV memory traffic. MLA keeps a
+small latent representation and reconstructs K/V on demand.
 
-**What (shape contract)**
-- Input `x`: `(B, L, d)`.
-- Output `y`: `(B, L, d)`.
-- Internal invariants:
-  - `qk_head_dim = qk_nope_head_dim + qk_rope_head_dim`
-  - `kv_a_proj_with_mqa` outputs `(kv_lora_rank + qk_rope_head_dim)` per token.
-  - `k_rope` is shared MQA rope key: `(B, 1, L, qk_rope_head_dim)` before broadcast.
+**Problem 2: Position and content are entangled.**  
+Applying RoPE to all channels mixes positional phase into every feature channel.
+DeepSeek separates channels into:
+- rope slice (positional), and
+- nope slice (content).
 
-**How**
+This separation gives cleaner control over what is position-sensitive.
 
-1. Build `q`:
-   - direct path: `q = x @ q_proj.T`
-   - low-rank path: `qa = x @ q_a_proj.T` -> `rms_norm` -> `q = qa @ q_b_proj.T`
+---
+
+### Unit B — Low-rank Q projection (prelude to MLA)
+
+DeepSeek-V3/V3.1 mainstream checkpoints use low-rank Q projection:
+
+1. `qa = x @ q_a_proj.T`
+2. `qa_norm = rms_norm(qa, q_a_layernorm)`
+3. `q = qa_norm @ q_b_proj.T`
+
+Why this section is separate:
+- Conceptually, this is a **Q-parameterization choice**.
+- MLA core value is still KV latent compression + decoupled RoPE.
+- Keeping them separate helps students avoid mistaking "low-rank Q" for "all of MLA".
+
+Implementation contract for this course revision:
+- `load_deepseek` only loads the low-rank Q path weights (`q_a_proj`, `q_a_layernorm`, `q_b_proj`).
+- `mla_project` builds `q` from this low-rank path.
+
+Direct path supplement (for comparison only):
+- Some reference implementations expose `q = x @ q_proj.T` as an optional fallback.
+- It is **not** the primary path for this task's teaching flow.
+
+---
+
+### Unit C — MLA (`mla_project`)
+
+#### Why add MLA?
+
+- Reduces KV storage footprint.
+- Keeps per-head attention behavior by reconstructing head-wise tensors.
+- Adds explicit control over positional channels via decoupled RoPE.
+
+#### Purpose
+
+Given `x: (B, L, d)`, return attention output `y: (B, L, d)`.
+
+#### What (contracts)
+
+- `qk_head_dim = qk_nope_head_dim + qk_rope_head_dim`
+- `kv_a_proj_with_mqa` outputs `(kv_lora_rank + qk_rope_head_dim)` per token:
+  - front part -> latent `c_kv`
+  - tail part -> shared `k_rope`
+- `k_rope` is shared across heads before broadcast: `(B, 1, L, qk_rope_head_dim)`
+
+#### Mini numeric example
+
+Suppose:
+- `H=4`, `qk_nope_head_dim=8`, `qk_rope_head_dim=4`, `v_head_dim=8`, `kv_lora_rank=8`
+
+Then:
+- baseline full K width per token: `4 * (8 + 4) = 48`
+- baseline full V width per token: `4 * 8 = 32`
+- MLA latent storage before reconstruction: `c_kv(8) + k_rope(4) = 12`
+
+This is the core compression intuition.
+
+#### How (ordered implementation steps)
+
+1. Build Q branch:
+   - `qa = x @ q_a_proj.T -> rms_norm -> q = qa @ q_b_proj.T`
 2. Reshape `q -> (B, H, L, qk_head_dim)` and split into `q_nope | q_rope`.
-3. Build latent KV:
+3. Build KV latent branch:
    - `compressed = x @ kv_a_proj_with_mqa.T`
    - split `compressed -> c_kv | k_rope`
-   - `c_kv` -> `rms_norm` -> `kv_b_proj` -> reshape -> split `k_nope | v`
-4. Apply `rope_half` **only** to `q_rope` and `k_rope`.
-5. Broadcast `k_rope` from `(B, 1, L, qk_rope_head_dim)` to `(B, H, L, qk_rope_head_dim)`.
-6. Concatenate:
+   - `c_kv -> rms_norm -> kv_b_proj` to get per-head `[k_nope, v]`
+4. Apply `rope_half` only to `q_rope` and `k_rope`.
+5. Broadcast `k_rope` from head-shared shape to all heads.
+6. Reconstruct full tensors:
    - `q_full = concat(q_nope, q_rope)`
    - `k_full = concat(k_nope, k_rope)`
-7. Run causal SDPA with `scale = qk_head_dim**(-0.5)` (plus mscale adjustment for yarn configs).
-8. Merge heads and apply `o_proj`.
+7. Run SDPA with:
+   - scale `qk_head_dim**(-0.5)` (plus mscale adjustment for yarn configs),
+   - **boolean causal mask** (`True = blocked`).
+8. Merge heads and project with `o_proj`.
 
-**Check**
-- `mla_project` output shape is exactly `(B, L, d)`.
-- Changing non-uniform position spacing (e.g. `[0,1,2,3]` vs `[0,2,4,6]`) changes output.
-- Perturbing `kv_b_proj` changes output (proves latent path is active).
+#### Check (before moving on)
 
-### Step 2 — Implement DeepSeek MoE branch in `deepseek_forward`
+- `mla_project` output shape is `(B, L, d)`.
+- Non-uniform position spacing changes output.
+- Perturbing `kv_b_proj` changes output (confirms latent up-projection path is active).
 
-**Why add this?**
-- DeepSeek routing uses sigmoid confidence and group-limited candidate search for stable,
-  sparse expert usage.
-- Shared experts provide an always-on dense capacity path to reduce routing brittleness.
-- Tradeoff: routing is more complex than plain top-k and easier to get subtly wrong.
+---
 
-**Purpose**
-- For MoE layers (`layer_index >= first_k_dense_replace`), produce FFN output that matches
-  DeepSeek's routing semantics.
+### Unit D — DeepSeek MoE in `deepseek_forward`
 
-**What (shape contract)**
+#### Why this routing design?
+
+- Sigmoid routing gives independent confidence per expert.
+- Selection bias helps choose experts without directly distorting final token weights.
+- Group-limited selection constrains candidate search.
+- Shared experts provide a stable dense path for every token.
+
+#### Purpose
+
+For layers `i >= first_k_dense_replace`, replace dense FFN with DeepSeek MoE behavior.
+
+#### What (contracts)
+
 - Flatten hidden states to `(T, d)` where `T = B * L`.
-- Router scores shape `(T, n_routed_experts)`.
-- Selected experts per token shape `(T, num_experts_per_tok)`.
+- Router scores shape: `(T, n_routed_experts)`.
+- Selected experts per token: `(T, num_experts_per_tok)`.
 
-**How**
+#### Mini routing example
 
-1. Compute sigmoid routing scores:
-   - `scores = sigmoid(x @ W_gate.T)`
-2. Compute biased scores for selection only:
-   - `scores_biased = scores + e_score_correction_bias`
-3. Group-limited candidate selection:
-   - reshape biased scores to `(T, n_group, experts_per_group)`
-   - per group: sum top-2 -> `group_scores`
-   - select top `topk_group` groups
-   - mask out other groups with `-inf`
-   - run expert top-k on masked biased scores
-4. Gather **unbiased** selected token weights from `scores`, then:
-   - normalize if `norm_topk_prob`
-   - multiply by `routed_scaling_factor`
-5. Dispatch tokens through routed experts with these weights.
-6. Compute shared experts dense SwiGLU output.
-7. Return `routed_output + shared_output`.
+Assume:
+- `n_routed_experts=8`, `n_group=2`, `topk_group=1`, `num_experts_per_tok=2`
 
-**Check**
-- Zeroing shared expert weights changes model output.
-- Zeroing a non-selected routed expert can be a no-op on that fixture.
+For each token:
+1. Compute `scores = sigmoid(x @ W_gate.T)`.
+2. Compute `scores_biased = scores + e_score_correction_bias`.
+3. Use `scores_biased` for group filtering and top-k selection.
+4. Gather token weights from **unbiased** `scores` at selected indices.
+5. Normalize (if `norm_topk_prob`) and apply `routed_scaling_factor`.
+6. Add shared expert dense output.
 
-### Step 3 — Assemble full forward deterministically
+Critical invariant: **biased scores choose experts; unbiased scores weight experts.**
 
-**Why add this?**
-- Most parity bugs come from correct operators wired in the wrong order.
-- Deterministic assembly removes ambiguity and makes failures localizable.
+#### How (ordered implementation steps)
 
-**Purpose**
-- Produce logits `(B, L, vocab_size)` with causal behavior.
+1. Compute sigmoid scores.
+2. Add selection bias only for routing decisions.
+3. Group-limited selection:
+   - reshape by groups,
+   - score groups,
+   - keep top groups,
+   - mask other groups out,
+   - select top experts.
+4. Gather unbiased selected weights.
+5. Normalize and scale weights.
+6. Dispatch to routed experts.
+7. Compute shared experts branch and add it.
 
-**What**
-- `start_pos` offsets position ids.
-- Layer behavior switches from dense to MoE at `first_k_dense_replace`.
+#### Check
 
-**How (integration assembly path)**
+- Zeroing shared expert weights changes output.
+- Zeroing a non-selected routed expert can be no-op on the tiny fixture.
+- Changing selection bias should mainly change selected indices, not the weighting formula.
+
+---
+
+### Unit E — Whole-model assembly (`deepseek_forward`)
+
+#### Why emphasize wiring order?
+
+Most parity bugs in L3 whole-model tasks are wiring mistakes, not operator math mistakes.
+Use one deterministic order and do not improvise.
+
+#### Deterministic integration path
 
 1. `h = embedding(input_ids, tok_embed)`
 2. `positions = arange(start_pos, start_pos + L)`
-3. For each layer `i` in order:
+3. For each layer `i`:
    - `h_attn_in = rms_norm(h, input_layernorm)`
    - `attn_out = mla_project(h_attn_in, layer, cfg, positions)`
    - `h = add_residual(h, attn_out)`
    - `h_ffn_in = rms_norm(h, post_attention_layernorm)`
    - if `i < first_k_dense_replace`: dense `swiglu_ffn`
-   - else: DeepSeek MoE branch
+   - else: DeepSeek MoE
    - `h = add_residual(h, ffn_out)`
 4. `h = rms_norm(h, final_norm)`
 5. `logits = h @ lm_head.T`
 
-**Check**
-- Causal invariant: changing the last token must not change earlier logits.
+#### Cross-task dependency contract
 
-### Cross-task dependency contract
+| Primitive | Implemented in | How 311 uses it |
+|---|---|---|
+| `rms_norm` | `212` | pre-attn, post-attn, final norm |
+| `rope_half` | `213` | only rope slices (`q_rope`, `k_rope`) |
+| SDPA + mask policy | `205` + `009` | scaled attention with boolean causal mask |
+| `swiglu_ffn` | `214` | dense branch for early layers |
+| `moe_ffn` core | `308` | routed expert dispatch core under DeepSeek routing policy |
 
-- **Primitive math responsibility**
-  - `213`: `rope_half` math.
-  - `212`: `rms_norm`.
-  - `205`: SDPA behavior.
-  - `214`: dense SwiGLU FFN.
-  - `308`: routed MoE dispatch core.
-- **311 responsibility**
-  - DeepSeek-specific MLA split/recombine wiring.
-  - DeepSeek-specific routing policy (sigmoid + bias + group top-k + shared experts).
-  - Whole-model residual/norm ordering and dense-vs-MoE switch.
-- **Compatibility constraints**
-  - `qk_head_dim == qk_nope_head_dim + qk_rope_head_dim`
-  - `n_routed_experts % n_group == 0`
-  - `topk_group <= n_group`
-  - `num_experts_per_tok <= n_routed_experts`
+#### Compatibility constraints
+
+- `qk_head_dim == qk_nope_head_dim + qk_rope_head_dim`
+- `n_routed_experts % n_group == 0`
+- `topk_group <= n_group`
+- `num_experts_per_tok <= n_routed_experts`
 
 ---
 
@@ -183,7 +267,7 @@ def mla_project(
     x: np.ndarray,          # (B, L, d)
     layer: dict,            # per-layer MLA weights from load_deepseek
     cfg: DeepseekConfig,
-    positions: np.ndarray,  # (L,) integer position indices
+    positions: np.ndarray,  # (L,) integer positions
 ) -> np.ndarray:            # (B, L, d)
 ```
 
@@ -200,14 +284,18 @@ def deepseek_forward(
 
 ## Read More
 
-- DeepSeek-V3 technical report: https://arxiv.org/abs/2412.19437
+- DeepSeek-V3 report: https://arxiv.org/abs/2412.19437
+  - Focus on MLA and MoE routing design motivations.
 - `transformers` reference: `modeling_deepseek_v3.py`
-- `215_gqa/`: baseline grouped-query attention wiring
-- `308_mixtral_model/`: MoE dispatch baseline for comparison
+  - Focus on tensor shapes and routing path details.
+- `215_gqa/`
+  - Use as a baseline attention wiring comparison.
+- `308_mixtral_model/`
+  - Compare MoE dispatch core; then add DeepSeek-specific routing logic.
 
-Tier-B real-weights parity is currently unavailable in this task:
-public tiny checkpoints rely on yarn + `rope_interleave=True`, while 311
-targets default rotate-half RoPE. See `download.sh` and `convert.py`.
+Tier-B real-weights parity is currently unavailable for this task:
+available tiny checkpoints rely on yarn + `rope_interleave=True`, while 311
+teaches default rotate-half RoPE only. See `download.sh` and `convert.py`.
 
 ---
 
@@ -218,28 +306,28 @@ uv run grade 311
 uv run grade 311 -v
 ```
 
-### Verification ladder
+### Verification ladder (run in this order)
 
-1. **Operator-level check**
+1. **Operator parity**
    - `test_mla_project_matches_oracle`
 2. **Cross-task wiring checks**
    - `test_mla_kv_lora_rank_is_compressed`
    - `test_mla_rope_slice_carries_position`
    - `test_moe_shared_experts_always_contribute`
    - `test_moe_non_selected_expert_noop`
-3. **Whole-model parity/invariants**
+3. **Whole-model checks**
    - `test_deepseek_logits_match_oracle`
    - `test_deepseek_logits_shape`
    - `test_deepseek_causal`
 4. **Optional real-weight parity**
-   - not enabled until a suitable tiny default-RoPE checkpoint exists
+   - enabled only when a suitable tiny default-RoPE checkpoint exists
 
 ### Debug playbook
 
 | Symptom | Likely cause | First check |
 |---|---|---|
-| `mla_project` shape mismatch | wrong head reshape/split sizes | verify `qk_head_dim = qk_nope + qk_rope` and transpose order |
-| Position test fails (no sensitivity) | RoPE applied to wrong slice or not broadcasted | confirm only `q_rope`/`k_rope` go through `rope_half`; `k_rope` is broadcast to all heads |
-| MoE output unstable/NaN | masked scores not using `-inf`, or wrong normalization | inspect group mask and `norm_topk_prob` denominator (`+1e-20`) |
-| Shared-expert test no effect | shared branch omitted | confirm final MoE output adds routed + shared outputs |
-| Causal test fails | missing/incorrect causal mask in attention | verify SDPA receives a boolean causal mask (`True` means masked) for every layer |
+| `mla_project` shape mismatch | wrong split/reshape order | verify `qk_head_dim`, transpose order, and concat axes |
+| position-sensitive tests fail | RoPE applied to wrong channels | confirm only rope slices are rotated |
+| MoE behavior unstable | group mask or normalization bug | inspect selected indices and normalized weights per token |
+| shared-expert test no effect | shared branch not added | verify final FFN output is `routed + shared` |
+| causal test fails | mask policy mismatch | confirm boolean causal mask (`True=blocked`) reaches every layer |

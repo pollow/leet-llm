@@ -12,7 +12,6 @@ wiring invariants, and high-risk gotchas.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Optional
 
 import numpy as np
 
@@ -74,7 +73,7 @@ class DeepseekConfig:
     topk_group: int
     first_k_dense_replace: int
     moe_intermediate_size: int
-    q_lora_rank: Optional[int] = None
+    q_lora_rank: int = 1536
     norm_topk_prob: bool = True
     routed_scaling_factor: float = 1.0
     max_seq_len: int = 4096

@@ -22,7 +22,9 @@ Weight layout in fixture:
     self_attn.kv_a_proj_with_mqa.weight    (kv_lora_rank+qk_rope_head_dim, d)
     self_attn.kv_a_layernorm.weight         (kv_lora_rank,)
     self_attn.kv_b_proj.weight              (n_heads*(qk_nope_head_dim+v_head_dim), kv_lora_rank)
-    self_attn.q_proj.weight                 (n_heads*qk_head_dim, d)  [no q_lora in tiny]
+    self_attn.q_a_proj.weight               (q_lora_rank, d)
+    self_attn.q_a_layernorm.weight          (q_lora_rank,)
+    self_attn.q_b_proj.weight               (n_heads*qk_head_dim, q_lora_rank)
     self_attn.o_proj.weight                 (d, n_heads*v_head_dim)
     mlp.gate_proj.weight                    (intermediate_size, d)
     mlp.up_proj.weight                      (intermediate_size, d)
@@ -54,6 +56,7 @@ d = 32      # hidden_size
 NL = 2      # num_hidden_layers
 H = 4       # num_attention_heads
 KV_LORA = 8   # kv_lora_rank
+Q_LORA = 16   # q_lora_rank
 QK_NOPE = 8   # qk_nope_head_dim
 QK_ROPE = 4   # qk_rope_head_dim
 QK_HEAD = QK_NOPE + QK_ROPE   # qk_head_dim = 12
@@ -110,15 +113,19 @@ def _mla_np(
     kv_a_proj: np.ndarray,       # (kv_lora_rank+qk_rope_head_dim, d)
     kv_a_layernorm_w: np.ndarray, # (kv_lora_rank,)
     kv_b_proj: np.ndarray,        # (n_heads*(qk_nope_head_dim+v_head_dim), kv_lora_rank)
-    q_proj: np.ndarray,           # (n_heads*qk_head_dim, d)
+    q_a_proj: np.ndarray,         # (q_lora_rank, d)
+    q_a_layernorm_w: np.ndarray,  # (q_lora_rank,)
+    q_b_proj: np.ndarray,         # (n_heads*qk_head_dim, q_lora_rank)
     o_proj: np.ndarray,           # (d, n_heads*v_head_dim)
     pos: np.ndarray,              # (L,)
 ) -> np.ndarray:
-    """Composed float64 MLA forward (no q_lora_rank path)."""
+    """Composed float64 MLA forward (low-rank Q path)."""
     B, Lseq, _ = x.shape
 
-    # Q: direct proj
-    q = x @ q_proj.T   # (B, L, n_heads*qk_head_dim)
+    # Q: low-rank path
+    q_a = x @ q_a_proj.T
+    q_a_norm = _rms_norm(q_a, q_a_layernorm_w, EPS)
+    q = q_a_norm @ q_b_proj.T   # (B, L, n_heads*qk_head_dim)
     q = q.reshape(B, Lseq, H, QK_HEAD).transpose(0, 2, 1, 3)   # (B, H, L, QK_HEAD)
     q_nope = q[..., :QK_NOPE]
     q_rope = q[..., QK_NOPE:]
@@ -273,7 +280,9 @@ def _composed_oracle_np(W: dict, ids: np.ndarray) -> np.ndarray:
             kv_a_proj=W[f"{p}.self_attn.kv_a_proj_with_mqa.weight"].astype(np.float64),
             kv_a_layernorm_w=W[f"{p}.self_attn.kv_a_layernorm.weight"].astype(np.float64),
             kv_b_proj=W[f"{p}.self_attn.kv_b_proj.weight"].astype(np.float64),
-            q_proj=W[f"{p}.self_attn.q_proj.weight"].astype(np.float64),
+            q_a_proj=W[f"{p}.self_attn.q_a_proj.weight"].astype(np.float64),
+            q_a_layernorm_w=W[f"{p}.self_attn.q_a_layernorm.weight"].astype(np.float64),
+            q_b_proj=W[f"{p}.self_attn.q_b_proj.weight"].astype(np.float64),
             o_proj=W[f"{p}.self_attn.o_proj.weight"].astype(np.float64),
             pos=pos,
         )
@@ -329,7 +338,9 @@ def main() -> None:
         W[f"{p}.self_attn.kv_a_proj_with_mqa.weight"] = rng.standard_normal((KV_LORA + QK_ROPE, d))
         W[f"{p}.self_attn.kv_a_layernorm.weight"]      = rng.standard_normal((KV_LORA,))
         W[f"{p}.self_attn.kv_b_proj.weight"]           = rng.standard_normal((H * (QK_NOPE + V_HEAD), KV_LORA))
-        W[f"{p}.self_attn.q_proj.weight"]              = rng.standard_normal((H * QK_HEAD, d))
+        W[f"{p}.self_attn.q_a_proj.weight"]            = rng.standard_normal((Q_LORA, d))
+        W[f"{p}.self_attn.q_a_layernorm.weight"]       = rng.standard_normal((Q_LORA,))
+        W[f"{p}.self_attn.q_b_proj.weight"]            = rng.standard_normal((H * QK_HEAD, Q_LORA))
         W[f"{p}.self_attn.o_proj.weight"]              = rng.standard_normal((d, H * V_HEAD))
 
         if i < FIRST_K:
@@ -364,7 +375,7 @@ def main() -> None:
             num_attention_heads=H,
             num_key_value_heads=H,
             kv_lora_rank=KV_LORA,
-            q_lora_rank=None,
+            q_lora_rank=Q_LORA,
             qk_rope_head_dim=QK_ROPE,
             qk_nope_head_dim=QK_NOPE,
             v_head_dim=V_HEAD,
@@ -401,7 +412,9 @@ def main() -> None:
                     "self_attn.kv_a_proj_with_mqa.weight",
                     "self_attn.kv_a_layernorm.weight",
                     "self_attn.kv_b_proj.weight",
-                    "self_attn.q_proj.weight",
+                    "self_attn.q_a_proj.weight",
+                    "self_attn.q_a_layernorm.weight",
+                    "self_attn.q_b_proj.weight",
                     "self_attn.o_proj.weight",
                 ):
                     sd[f"{p}.{nm}"].copy_(torch.from_numpy(W[f"{p}.{nm}"].astype(np.float32)))
@@ -445,6 +458,7 @@ def main() -> None:
         n_heads=np.array(H),
         vocab_size=np.array(V),
         kv_lora_rank=np.array(KV_LORA),
+        q_lora_rank=np.array(Q_LORA),
         qk_nope_head_dim=np.array(QK_NOPE),
         qk_rope_head_dim=np.array(QK_ROPE),
         v_head_dim=np.array(V_HEAD),

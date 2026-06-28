@@ -58,6 +58,7 @@ def _tiny_cfg() -> DeepseekConfig:
         topk_group=int(_TINY["topk_group"]),
         first_k_dense_replace=int(_TINY["first_k_dense_replace"]),
         moe_intermediate_size=int(_TINY["moe_intermediate_size"]),
+        q_lora_rank=int(_TINY["q_lora_rank"]),
         norm_topk_prob=bool(_TINY["norm_topk_prob"]),
         routed_scaling_factor=float(_TINY["routed_scaling_factor"]),
         max_seq_len=int(_TINY["max_seq_len"]),
@@ -103,7 +104,9 @@ def _mla_oracle_np(
     kv_a_proj: np.ndarray,  # (kv_lora_rank+qk_rope_head_dim, d)
     kv_a_norm_w: np.ndarray, # (kv_lora_rank,)
     kv_b_proj: np.ndarray,  # (n_heads*(qk_nope+v_head), kv_lora_rank)
-    q_proj: np.ndarray,     # (n_heads*qk_head, d)
+    q_a_proj: np.ndarray,   # (q_lora_rank, d)
+    q_a_norm_w: np.ndarray, # (q_lora_rank,)
+    q_b_proj: np.ndarray,   # (n_heads*qk_head, q_lora_rank)
     o_proj: np.ndarray,     # (d, n_heads*v_head)
     n_heads: int,
     qk_nope: int,
@@ -113,13 +116,15 @@ def _mla_oracle_np(
     eps: float,
     base: float,
 ) -> np.ndarray:
-    """Float64 MLA oracle (no q_lora)."""
+    """Float64 MLA oracle (low-rank Q path)."""
     B, L, d = x.shape
     QK_HEAD = qk_nope + qk_rope
     pos = np.arange(L, dtype=np.float64)
 
-    # Q
-    q = x @ q_proj.T  # (B, L, n_heads*QK_HEAD)
+    # Q (low-rank path)
+    q_a = x @ q_a_proj.T
+    q_a_norm = _rms_norm_np(q_a, q_a_norm_w, eps)
+    q = q_a_norm @ q_b_proj.T  # (B, L, n_heads*QK_HEAD)
     q = q.reshape(B, L, n_heads, QK_HEAD).transpose(0, 2, 1, 3)  # (B, H, L, QK_HEAD)
     q_nope = q[..., :qk_nope]
     q_rope_slice = q[..., qk_nope:]
@@ -215,11 +220,14 @@ def test_mla_project_matches_oracle():
     L = 4
     B = 1
 
+    Q_LORA = cfg.q_lora_rank
     # Random weights matching the tiny config dimension
     kv_a_proj = rng.standard_normal((KV_LORA + QK_ROPE, d))
     kv_a_norm_w = rng.standard_normal((KV_LORA,))
     kv_b_proj = rng.standard_normal((H * (QK_NOPE + V_HD), KV_LORA))
-    q_proj = rng.standard_normal((H * QK_HEAD, d))
+    q_a_proj = rng.standard_normal((Q_LORA, d))
+    q_a_norm_w = rng.standard_normal((Q_LORA,))
+    q_b_proj = rng.standard_normal((H * QK_HEAD, Q_LORA))
     o_proj = rng.standard_normal((d, H * V_HD))
     x = rng.standard_normal((B, L, d))
 
@@ -227,14 +235,16 @@ def test_mla_project_matches_oracle():
         "kv_a_proj": kv_a_proj,
         "kv_a_layernorm": kv_a_norm_w,
         "kv_b_proj": kv_b_proj,
-        "q_proj": q_proj,
+        "q_a_proj": q_a_proj,
+        "q_a_layernorm": q_a_norm_w,
+        "q_b_proj": q_b_proj,
         "o_proj": o_proj,
     }
     positions = np.arange(L)
 
     out = mla_project(x, layer, cfg, positions)
     ref = _mla_oracle_np(
-        x, kv_a_proj, kv_a_norm_w, kv_b_proj, q_proj, o_proj,
+        x, kv_a_proj, kv_a_norm_w, kv_b_proj, q_a_proj, q_a_norm_w, q_b_proj, o_proj,
         H, QK_NOPE, QK_ROPE, V_HD, KV_LORA,
         cfg.norm_eps, cfg.rope_base,
     )
@@ -305,7 +315,9 @@ def test_mla_rope_slice_carries_position():
         "kv_a_proj":      W[f"{p}.self_attn.kv_a_proj_with_mqa.weight"].astype(np.float64),
         "kv_a_layernorm": W[f"{p}.self_attn.kv_a_layernorm.weight"].astype(np.float64),
         "kv_b_proj":      W[f"{p}.self_attn.kv_b_proj.weight"].astype(np.float64),
-        "q_proj":         W[f"{p}.self_attn.q_proj.weight"].astype(np.float64),
+        "q_a_proj":       W[f"{p}.self_attn.q_a_proj.weight"].astype(np.float64),
+        "q_a_layernorm":  W[f"{p}.self_attn.q_a_layernorm.weight"].astype(np.float64),
+        "q_b_proj":       W[f"{p}.self_attn.q_b_proj.weight"].astype(np.float64),
         "o_proj":         W[f"{p}.self_attn.o_proj.weight"].astype(np.float64),
     }
 
@@ -481,7 +493,7 @@ def test_deepseek_real_weights_logits():
         mscale=float(ref["mscale"]),
         mscale_all_dim=float(ref["mscale_all_dim"]),
         intermediate_size=int(ref["intermediate_size"]),
-        q_lora_rank=int(ref["q_lora_rank"]) if ref["q_lora_rank"] != 0 else None,
+        q_lora_rank=int(ref["q_lora_rank"]),
         tie_word_embeddings=bool(ref["tie_word_embeddings"]),
     )
     params = load_deepseek(weights, cfg)

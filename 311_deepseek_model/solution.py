@@ -12,7 +12,6 @@ wiring invariants, and high-risk gotchas.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Optional
 
 import numpy as np
 
@@ -47,7 +46,7 @@ def mla_project(
     - Build full ``q``/``k`` by concatenating nope and rope slices.
     - Use causal scaled-dot-product attention before ``o_proj``.
     """
-    raise NotImplementedError("Implement mla_project — see 311_deepseek_model/README.md")
+
 
 
 # ---------------------------------------------------------------------------
@@ -74,7 +73,7 @@ class DeepseekConfig:
     topk_group: int
     first_k_dense_replace: int
     moe_intermediate_size: int
-    q_lora_rank: Optional[int] = None
+    q_lora_rank: int = 1536
     norm_topk_prob: bool = True
     routed_scaling_factor: float = 1.0
     max_seq_len: int = 4096
@@ -114,7 +113,59 @@ def load_deepseek(weights: dict, cfg: DeepseekConfig) -> DeepseekParams:
     - Keep rotate-half RoPE layout as-is (no extra un-permute).
     - Exact expected keys and shapes are documented in README.
     """
-    raise NotImplementedError("Implement load_deepseek — see 311_deepseek_model/README.md")
+    def _f(name: str) -> np.ndarray:
+        arr = weights[name]
+        if isinstance(arr, np.ndarray) and np.issubdtype(arr.dtype, np.floating):
+            return arr.astype(np.float64, copy=False)
+        return arr
+
+    tok_embed = _f("model.embed_tokens.weight")
+    final_norm = _f("model.norm.weight")
+
+    if cfg.tie_word_embeddings or "lm_head.weight" not in weights:
+        lm_head = tok_embed
+    else:
+        lm_head = _f("lm_head.weight")
+
+    layers: list[dict[str, np.ndarray]] = []
+    for i in range(cfg.n_layers):
+        p = f"model.layers.{i}"
+        layer: dict[str, np.ndarray] = {
+            "input_layernorm": _f(f"{p}.input_layernorm.weight"),
+            "post_attention_layernorm": _f(f"{p}.post_attention_layernorm.weight"),
+            "kv_a_proj": _f(f"{p}.self_attn.kv_a_proj_with_mqa.weight"),
+            "kv_a_layernorm": _f(f"{p}.self_attn.kv_a_layernorm.weight"),
+            "kv_b_proj": _f(f"{p}.self_attn.kv_b_proj.weight"),
+            "o_proj": _f(f"{p}.self_attn.o_proj.weight"),
+        }
+
+        layer["q_a_proj"] = _f(f"{p}.self_attn.q_a_proj.weight")
+        layer["q_a_layernorm"] = _f(f"{p}.self_attn.q_a_layernorm.weight")
+        layer["q_b_proj"] = _f(f"{p}.self_attn.q_b_proj.weight")
+
+        if i < cfg.first_k_dense_replace:
+            layer["gate_proj"] = _f(f"{p}.mlp.gate_proj.weight")
+            layer["up_proj"] = _f(f"{p}.mlp.up_proj.weight")
+            layer["down_proj"] = _f(f"{p}.mlp.down_proj.weight")
+        else:
+            layer["gate"] = _f(f"{p}.mlp.gate.weight")
+            layer["e_score_correction_bias"] = _f(
+                f"{p}.mlp.gate.e_score_correction_bias"
+            )
+            layer["experts_gate_up_proj"] = _f(f"{p}.mlp.experts.gate_up_proj")
+            layer["experts_down_proj"] = _f(f"{p}.mlp.experts.down_proj")
+            layer["shared_gate_proj"] = _f(f"{p}.mlp.shared_experts.gate_proj.weight")
+            layer["shared_up_proj"] = _f(f"{p}.mlp.shared_experts.up_proj.weight")
+            layer["shared_down_proj"] = _f(f"{p}.mlp.shared_experts.down_proj.weight")
+
+        layers.append(layer)
+
+    return DeepseekParams(
+        tok_embed=tok_embed,
+        layers=layers,
+        final_norm=final_norm,
+        lm_head=lm_head,
+    )
 
 
 def deepseek_forward(
