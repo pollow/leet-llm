@@ -184,6 +184,41 @@ Before marking a README rewrite complete, verify:
 
 ---
 
+## README + docstring co-maintenance standard
+
+When updating a task README, update the task stub/solution docstrings in the same changeset.
+
+### A) Simplification logic (what to keep vs remove)
+
+- **README owns rationale**: model deltas, design intent, tradeoffs, and step-by-step teaching.
+- **Docstrings own contracts**: input/output shapes, required wiring invariants, and high-risk gotchas.
+- **Remove duplication**: do not repeat long derivations, full delta catalogs, or full HF key listings in docstrings if README already contains them.
+- **Keep one-line anchors**: preserve critical formulas and behavior invariants where they directly affect implementation correctness.
+
+### B) Execution path (how to apply)
+
+Apply this order whenever README changes meaningfully:
+
+1. Update README first (source of truth for tutorial depth and rationale).
+2. Trim/refresh module-level docstrings to brief task scope + README pointer.
+3. Trim/refresh function/class docstrings to API contract + key gotchas.
+4. Verify no behavior changes were introduced accidentally.
+
+This keeps docs coherent while preventing drift between teaching text and code-local guidance.
+
+### C) Stub/solution consistency contract (mandatory)
+
+For each task pair (stub file and `solution.py`):
+
+- Keep **function signatures identical** (name, args, defaults, return annotation).
+- Keep **docstrings semantically aligned** (same contract and caveats; wording may differ slightly).
+- Keep **data structure definitions aligned** (e.g., dataclass fields and defaults).
+- Do **not** overwrite or simplify away reference implementation logic in `solution.py`.
+
+Rule of thumb: sync documentation surfaces and interfaces, never replace solved code with stubs.
+
+---
+
 ## Rollout usage
 
 Use this standard to rewrite older README tasks incrementally.

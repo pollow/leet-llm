@@ -114,25 +114,31 @@ def load_gemma(weights: dict, cfg: GemmaConfig) -> GemmaParams:
     ``lm_head`` reuses ``model.embed_tokens.weight``.
     See ``README.md`` for the full key map.
     """
-    tok_embed = weights["model.embed_tokens.weight"]
-    final_norm = weights["model.norm.weight"]
+    def _f(name: str) -> np.ndarray:
+        arr = weights[name]
+        if isinstance(arr, np.ndarray) and np.issubdtype(arr.dtype, np.floating):
+            return arr.astype(np.float64, copy=False)
+        return arr
+
+    tok_embed = _f("model.embed_tokens.weight")
+    final_norm = _f("model.norm.weight")
 
     layers: list[dict[str, np.ndarray]] = []
     for i in range(cfg.n_layers):
         prefix = f"model.layers.{i}"
         layers.append(
             {
-                "input_norm": weights[f"{prefix}.input_layernorm.weight"],
-                "post_attn_norm": weights[f"{prefix}.post_attention_layernorm.weight"],
-                "pre_ffn_norm": weights[f"{prefix}.pre_feedforward_layernorm.weight"],
-                "post_ffn_norm": weights[f"{prefix}.post_feedforward_layernorm.weight"],
-                "Wq": weights[f"{prefix}.self_attn.q_proj.weight"],
-                "Wk": weights[f"{prefix}.self_attn.k_proj.weight"],
-                "Wv": weights[f"{prefix}.self_attn.v_proj.weight"],
-                "Wo": weights[f"{prefix}.self_attn.o_proj.weight"],
-                "W_gate": weights[f"{prefix}.mlp.gate_proj.weight"],
-                "W_up": weights[f"{prefix}.mlp.up_proj.weight"],
-                "W_down": weights[f"{prefix}.mlp.down_proj.weight"],
+                "input_norm": _f(f"{prefix}.input_layernorm.weight"),
+                "post_attn_norm": _f(f"{prefix}.post_attention_layernorm.weight"),
+                "pre_ffn_norm": _f(f"{prefix}.pre_feedforward_layernorm.weight"),
+                "post_ffn_norm": _f(f"{prefix}.post_feedforward_layernorm.weight"),
+                "Wq": _f(f"{prefix}.self_attn.q_proj.weight"),
+                "Wk": _f(f"{prefix}.self_attn.k_proj.weight"),
+                "Wv": _f(f"{prefix}.self_attn.v_proj.weight"),
+                "Wo": _f(f"{prefix}.self_attn.o_proj.weight"),
+                "W_gate": _f(f"{prefix}.mlp.gate_proj.weight"),
+                "W_up": _f(f"{prefix}.mlp.up_proj.weight"),
+                "W_down": _f(f"{prefix}.mlp.down_proj.weight"),
             }
         )
 
