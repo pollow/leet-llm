@@ -157,6 +157,17 @@ Always separate:
 
 Students should be able to implement each side independently, then integrate.
 
+### D) Mask semantics (global convention)
+
+For student-facing README text, use boolean mask semantics as the default contract:
+
+- `True` means masked/forbidden.
+- `False` means visible/allowed.
+
+Do not use additive-mask phrasing as the primary contract in tutorial steps, integration
+paths, or debug playbooks. If an implementation internally converts a bool mask to score
+bias, describe that as an internal equivalence only, not as the main API contract.
+
 ---
 
 ## Rewrite checklist (for authors)
