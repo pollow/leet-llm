@@ -161,7 +161,6 @@ def deepseek_forward(
     input_ids: np.ndarray,
     params: DeepseekParams,
     cfg: DeepseekConfig,
-    start_pos: int = 0,
 ) -> np.ndarray:
     """Run DeepSeek-V3 causal forward and return logits ``(B, L, vocab_size)``.
 

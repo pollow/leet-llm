@@ -253,7 +253,6 @@ def gemma_forward(
     input_ids: np.ndarray,
     params: GemmaParams,
     cfg: GemmaConfig,
-    start_pos: int = 0,
 ) -> np.ndarray:
     """Run Gemma-2 forward pass and return logits ``(B, L, V)``.
 
@@ -262,12 +261,10 @@ def gemma_forward(
     - Use ``query_pre_attn_scalar ** -0.5`` for score scaling.
     - Even layers use sliding-window causal mask; odd layers use full causal mask.
     - Final projection is tied: ``logits = h @ tok_embed.T``, then final ``softcap``.
-
-    ``start_pos`` offsets RoPE positions for decode continuation.
     """
     h = embedding(input_ids, params.tok_embed) * np.sqrt(cfg.dim)
     L = input_ids.shape[-1]
-    positions = np.arange(start_pos, start_pos + L)
+    positions = np.arange(0, L)
     full_mask = triangular_mask(L)
     sliding_mask = sliding_window_mask(L, cfg.sliding_window)
 

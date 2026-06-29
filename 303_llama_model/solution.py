@@ -84,15 +84,13 @@ def llama_forward(
     input_ids: np.ndarray,
     params: LlamaParams,
     cfg: LlamaConfig,
-    start_pos: int = 0,
     rope_params: RopeParams = RopeParams(),
 ) -> np.ndarray:
-    """Token embed → N Llama blocks (causal, positions start_pos..) → final RMSNorm → lm_head.
+    """Token embed → N Llama blocks (causal) → final RMSNorm → lm_head.
     Returns logits (B, L, V)."""
     h = embedding(input_ids, params.tok_embed)
     L = input_ids.shape[-1]
-    # start_pos: ignore for now — only used by L4 KV-cache decoding
-    positions = np.arange(start_pos, start_pos + L)
+    positions = np.arange(0, L)
     mask = triangular_mask(L)
 
     for blockParam in params.layers:

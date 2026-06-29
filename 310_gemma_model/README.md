@@ -80,7 +80,7 @@ If one prerequisite is shaky, fix it first; 310 composes all of them.
 | Primitive | Implemented in | Consumed in 310 | Compatibility constraints |
 |---|---|---|---|
 | `embedding` | 201 | forward input stage | ids are integer token indices |
-| `rope_half` | 213 | q/k after projection | rotate-half layout; position indexing must align with `start_pos` |
+| `rope_half` | 213 | q/k after projection | rotate-half layout; positions are `arange(0, L)` |
 | `softmax` | 005 | attention probabilities | apply on masked score axis (last dim) |
 | `sliding_window_mask` | 305 | even layers only | boolean mask with `True` meaning forbidden attention |
 | GQA head repeat | 215 path | attention core | `n_heads % n_kv_heads == 0` |
@@ -95,7 +95,7 @@ Use this exact wiring order:
 2. For each layer `i`:
    - `a_in = gemma_rms_norm(h, input_layernorm)` using `(1+w)`.
    - q/k/v projections from `a_in`, then head reshape.
-   - build positions as `positions = arange(start_pos, start_pos + L)` for RoPE.
+   - build positions as `positions = arange(0, L)` for RoPE.
    - apply `rope_half` to q and k.
    - repeat kv heads for GQA.
    - compute scores with `query_pre_attn_scalar**-0.5`.
@@ -174,7 +174,6 @@ def gemma_forward(
     input_ids: np.ndarray,   # (B, L)
     params: GemmaParams,
     cfg: GemmaConfig,
-    start_pos: int = 0,
 ) -> np.ndarray:             # (B, L, vocab_size)
 ```
 

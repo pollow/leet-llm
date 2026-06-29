@@ -247,7 +247,7 @@ Use one deterministic order and do not improvise.
 #### Deterministic integration path
 
 1. `h = embedding(input_ids, tok_embed)`
-2. `positions = arange(start_pos, start_pos + L)`
+2. `positions = arange(0, L)`
 3. `causal_bool_mask = triu(ones((L, L), bool), k=1)`
 4. For each layer `i`:
    - `h_attn_in = rms_norm(h, input_layernorm)`
@@ -328,7 +328,6 @@ def deepseek_forward(
     input_ids: np.ndarray,  # (B, L)
     params: DeepseekParams,
     cfg: DeepseekConfig,
-    start_pos: int = 0,
 ) -> np.ndarray:            # (B, L, vocab_size)
 ```
 

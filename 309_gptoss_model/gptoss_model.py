@@ -259,7 +259,6 @@ def gptoss_forward(
     input_ids: np.ndarray,
     params: GptOssParams,
     cfg: GptOssConfig,
-    start_pos: int = 0,
 ) -> np.ndarray:
     """Token embed → N GPT-OSS blocks → final RMSNorm → lm_head logits.
 

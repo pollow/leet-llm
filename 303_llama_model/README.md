@@ -20,7 +20,7 @@ LM head.
 
 ```
 h = tok_embed[input_ids]                              # (B, L, d)
-positions = arange(start_pos, start_pos + L)
+positions = arange(0, L)
 mask = triangular_mask(L)                             # causal
 for block in layers:
     h = llama_decoder_block(h, block, cfg.n_heads, cfg.n_kv_heads,
@@ -98,10 +98,8 @@ class LlamaParams:
 def load_llama(weights: dict, cfg: LlamaConfig) -> LlamaParams: ...
 #   Map HF-named arrays (see table above) into LlamaParams.
 
-def llama_forward(input_ids: np.ndarray, params: LlamaParams, cfg: LlamaConfig,
-                  start_pos: int = 0) -> np.ndarray: ...
+def llama_forward(input_ids: np.ndarray, params: LlamaParams, cfg: LlamaConfig) -> np.ndarray: ...
 #   input_ids: (B, L)   ->   logits: (B, L, V)
-#   start_pos: ignore for now — only used by L4 KV-cache decoding
 ```
 
 ## How to Test

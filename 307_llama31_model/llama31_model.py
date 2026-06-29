@@ -92,7 +92,6 @@ def llama31_forward(
     input_ids: np.ndarray,
     params: Llama31Params,
     cfg: Llama31Config,
-    start_pos: int = 0,
 ) -> np.ndarray:
     """Call 303's forward directly as the baseline.
 
@@ -116,5 +115,4 @@ def llama31_forward(
         input_ids,
         params,
         cfg303,
-        start_pos=start_pos,
     )

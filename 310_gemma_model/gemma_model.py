@@ -90,7 +90,6 @@ def gemma_forward(
     input_ids: np.ndarray,
     params: GemmaParams,
     cfg: GemmaConfig,
-    start_pos: int = 0,
 ) -> np.ndarray:
     """Run Gemma-2 forward pass and return logits ``(B, L, V)``.
 
@@ -99,7 +98,5 @@ def gemma_forward(
     - Use ``query_pre_attn_scalar ** -0.5`` for score scaling.
     - Even layers use sliding-window causal mask; odd layers use full causal mask.
     - Final projection is tied: ``logits = h @ tok_embed.T``, then final ``softcap``.
-
-    ``start_pos`` offsets RoPE positions for decode continuation.
     """
     raise NotImplementedError("Implement gemma_forward — see 310_gemma_model/README.md")

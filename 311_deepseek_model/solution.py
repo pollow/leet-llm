@@ -338,7 +338,6 @@ def deepseek_forward(
     input_ids: np.ndarray,
     params: DeepseekParams,
     cfg: DeepseekConfig,
-    start_pos: int = 0,
 ) -> np.ndarray:
     """Run DeepSeek-V3 causal forward and return logits ``(B, L, vocab_size)``.
 
@@ -354,7 +353,7 @@ def deepseek_forward(
     """
     h = embedding(input_ids, params.tok_embed)
     L = input_ids.shape[-1]
-    positions = np.arange(start_pos, start_pos + L)
+    positions = np.arange(0, L)
 
     full_mask = triangular_mask(L)
 

@@ -376,7 +376,6 @@ def gptoss_forward(
     input_ids: np.ndarray,
     params: GptOssParams,
     cfg: GptOssConfig,
-    start_pos: int = 0,
 ) -> np.ndarray:
     """Token embed → N GPT-OSS blocks → final RMSNorm → lm_head logits.
 
@@ -401,7 +400,7 @@ def gptoss_forward(
     """
     h = embedding(input_ids, params.tok_embed)
     L = input_ids.shape[-1]
-    positions = np.arange(start_pos, start_pos + L)
+    positions = np.arange(0, L)
     full_mask = triangular_mask(L)
     sliding_mask = sliding_window_mask(L, cfg.sliding_window)
     af = rope_attention_scale(cfg.rope_scaling)

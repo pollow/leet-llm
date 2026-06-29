@@ -224,7 +224,6 @@ def mixtral_forward(
     input_ids: np.ndarray,
     params: MixtralParams,
     cfg: MixtralConfig,
-    start_pos: int = 0,
 ) -> np.ndarray:
     """Token embed → N Mixtral blocks (causal) → final RMSNorm → lm_head logits.
 
@@ -239,8 +238,7 @@ def mixtral_forward(
     """
     h = embedding(input_ids, params.tok_embed)
     L = input_ids.shape[-1]
-    # start_pos: ignore for now — only used by L4 KV-cache decoding
-    positions = np.arange(start_pos, start_pos + L)
+    positions = np.arange(0, L)
     mask = triangular_mask(L)
 
     for blockParam in params.layers:

@@ -71,7 +71,7 @@ wavelen[j]  = 2π / inv_freq[j]
 
 ```
 # baseline wiring (intentional): directly reuse 303 forward first
-logits = llama_forward(input_ids, params303, cfg303, start_pos)
+logits = llama_forward(input_ids, params303, cfg303)
 ```
 
 This baseline keeps 303's default RoPE behavior, so the scaling-sensitive 307 check will
@@ -112,7 +112,6 @@ def llama31_forward(
     input_ids: np.ndarray,         # (B, L)
     params: Llama31Params,
     cfg: Llama31Config,
-    start_pos: int = 0,
 ) -> np.ndarray:                   # (B, L, vocab_size)
 ```
 

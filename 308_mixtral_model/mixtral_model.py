@@ -115,7 +115,6 @@ def mixtral_forward(
     input_ids: np.ndarray,
     params: MixtralParams,
     cfg: MixtralConfig,
-    start_pos: int = 0,
 ) -> np.ndarray:
     """Token embed → N Mixtral blocks (causal) → final RMSNorm → lm_head logits.
 

@@ -39,8 +39,7 @@ def load_llama(weights: dict, cfg: LlamaConfig) -> LlamaParams:
     raise NotImplementedError("Implement load_llama — see 303_llama_model/README.md")
 
 
-def llama_forward(input_ids: np.ndarray, params: LlamaParams, cfg: LlamaConfig,
-                  start_pos: int = 0) -> np.ndarray:
-    """Token embed → N Llama blocks (causal, positions start_pos..) → final RMSNorm → lm_head.
+def llama_forward(input_ids: np.ndarray, params: LlamaParams, cfg: LlamaConfig) -> np.ndarray:
+    """Token embed → N Llama blocks (causal) → final RMSNorm → lm_head.
     Returns logits (B, L, V)."""
     raise NotImplementedError("Implement llama_forward — see 303_llama_model/README.md")
