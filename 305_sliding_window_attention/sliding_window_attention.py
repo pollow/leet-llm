@@ -11,12 +11,11 @@ See README.md. Run ``uv run grade 305`` to check your work.
 Hints:
 - ``sliding_window_mask``: reuse ``from leet_llm import triangular_mask`` (009).
   The band is ``(i - W, i]``.
-- ``mistral_forward``: compose ``embedding`` (201) → per layer [``rms_norm`` (212) →
-  q/k/v ``affine`` (003) + ``group_last_axis`` (001) → ``rope_half`` (213) on q/k →
-  repeat-kv + ``sdpa`` (205) with ``sliding_window_mask`` → merge + o_proj →
-  ``add_residual`` (208) → ``rms_norm`` → ``swiglu_ffn`` (214) → residual] →
-  final ``rms_norm`` → ``@ lm_head.T``. Use rotate-half RoPE (``rope_half``), NOT
-  ``llama_decoder_block`` (216, which is interleaved-only). No QKV bias.
+- ``mistral_forward``: token ``embedding`` (201) → per layer ``llama_decoder_block``
+  (216) with ``RopeParams(pair_type="half")`` under a ``sliding_window_mask`` band →
+  final ``rms_norm`` (212) → ``@ lm_head.T``. Mistral's block has no block-level delta,
+  so it **reuses** ``llama_decoder_block`` directly; the only Mistral-specific piece is
+  the sliding-window mask passed in. No QKV bias.
 """
 
 from __future__ import annotations
@@ -104,11 +103,9 @@ def mistral_forward(
 
     Returns logits of shape ``(B, L, V)``.
 
-    Mistral = rotate-half Llama with the sliding-window band mask. Compose from
-    granular L2 primitives (NOT ``llama_decoder_block`` which uses interleaved RoPE):
-      ``embedding`` → per layer [``rms_norm`` → q/k/v ``affine`` + head-split →
-      ``rope_half`` on q & k → repeat-kv + ``sdpa`` with ``sliding_window_mask`` →
-      merge + o_proj → ``add_residual`` → ``rms_norm`` → ``swiglu_ffn`` →
-      residual] → final ``rms_norm`` → ``@ lm_head.T``.
+    Mistral's decoder block is a plain rotate-half Llama block (RMSNorm → GQA with
+    rotate-half RoPE → SwiGLU), so it **reuses** ``llama_decoder_block`` (216) directly
+    with ``RopeParams(pair_type="half")``; the only Mistral delta is the
+    ``sliding_window_mask`` band passed as the attention mask.
     """
     raise NotImplementedError("Implement mistral_forward — see 305_sliding_window_attention/README.md")
