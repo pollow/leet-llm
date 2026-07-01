@@ -312,12 +312,165 @@ Signatures · Read More · How to Test**) but at system altitude:
 
 ## 9. Open items (resolve at scaffold time)
 
-- Finalize the exact registered API field names per task (the `Engine` / KV-manager /
-  collective / MLA-cache signatures) and add them to `leet_llm/_registry.py` as each lands.
+- **Track 1 (401–403): RESOLVED — see §10** (2026-06-30 scaffold-decisions pass).
 - Confirm the `multiprocessing` IPC primitive for `406` (Pipe vs shared-memory vs a tiny
-  socket ring) and whether the capstone grades on macOS spawn-start reliably.
-- Pin the graded prompts, `max_new_tokens`, world sizes, and block size for each fixture.
-- Confirm the `401 → 402 → 403` split granularity holds once the contract is prototyped
-  (cache vs scheduler vs paging — guard against the operator-filling smell at the seams).
+  socket ring) and whether the capstone grades on macOS spawn-start reliably. *(Track 2.)*
+- Pin the world sizes for the Track-2 fixtures. *(Track 2.)*
 - Confirm 407's MLA latent-KV cache and the analytic KV-size comparison exercise real
-  sparsity at the tiny fixture config (latent dim < full per-head K/V).
+  sparsity at the tiny fixture config (latent dim < full per-head K/V). *(Track 3.)*
+
+---
+
+## 10. Track-1 scaffold decisions (2026-06-30) — 401–403 pinned
+
+This pass authors **Track 1 only** (401 `kv_cache` → 402 `continuous_batching` → 403
+`paged_kv`) on Qwen3-0.6B. Track 2/3 stay as designed above. Every decision below is final
+for scaffolding; anything not listed defers to §§1–7.
+
+### 10.1 The KVCache-as-seam decision (the spine of the track)
+
+**Decision.** 401 registers **two separable surfaces**, not one fused engine:
+
+1. a **`KVCache` storage object** — the K/V seam, with a fixed interface, and
+2. **`prefill` / `decode_step`** — the re-authored Qwen3 decode forward, written against
+   *any* object satisfying that interface.
+
+402's scheduler holds one `KVCache` per request; 403's `PagedKVCache` **implements the same
+interface**, so the 401 `prefill`/`decode_step` forward runs over it **unchanged**. The
+paged/radix machinery is a *drop-in substitution behind the seam*, never a rewrite of the
+learner's earlier code.
+
+**Why (lecturer's rationale).** The one property that makes this a *systems* track rather
+than three disconnected function-fills is that the fast-path variations (batched, paged,
+prefix-shared) are all **the same forward over a different memory manager**. If the seam is
+discovered late (bundle-then-refactor, §Q3 option 2) the learner rewrites 401 at 403 and
+never feels that invariance. Pinning the seam at 401 is what makes "free design inside, exact
+oracle at the edge" (§3) concrete: the *edge* is the `KVCache` interface. This also inoculates
+against the §9 "operator-filling smell at the seams" — the seam is an interface contract, not
+a sub-function checklist. **This does not leak the internal design:** the README states the
+interface the harness binds to (what `append`/`get`/`length` must guarantee) and the
+equivalence oracle, never how to lay out blocks, offsets, or the decode loop.
+
+### 10.2 Registered contract (final field names → `_registry.py`)
+
+Everything *inside* is the learner's design; only these names are pinned and graded.
+
+**401 `kv_cache.py`**
+- `class KVCache` — per-layer preallocated K/V storage. `KVCache(cfg)`; `.append(layer, k, v)`;
+  `.get(layer) -> (K, V)` (contiguous, length-`self.length`); `.length` (tokens cached so far).
+  Per-layer store shape `(n_kv_heads, max_seq_len, head_dim)` — **GQA-specific** (decision §4a
+  cache corollary; no MLA generalization).
+- `prefill(prompt_ids, params, cfg, cache) -> logits` — full-prompt forward at
+  `positions = arange(0, len)`, fills `cache`, returns **last-position** logits `(1, V)`.
+- `decode_step(token_id, params, cfg, cache) -> logits` — single token at offset
+  `cache.length` with a `(1 × kv_len)` causal mask, appends its K/V, returns logits `(1, V)`.
+- `kv_generate(prompt_ids, params, cfg, n_new) -> list[int]` — greedy demo driver
+  (`prefill` then `n_new` × `decode_step`), the real-weights Tier-C entry point.
+
+**402 `continuous_batching.py`**
+- `class Engine` — `Engine(params, cfg)`; `.add_request(prompt_ids) -> req_id`;
+  `.step() -> list[tuple[req_id, int]]` (each active request's next token id, exactly one per
+  step); `.is_finished(req_id) -> bool`. Holds one 401 `KVCache` per live request.
+
+**403 `paged_kv.py`**
+- `class PagedKVCache` — satisfies the **401 `KVCache` interface** (`append`/`get`/`length`)
+  over fixed-size blocks; adds `.allocate()`, `.free()`, and exposes `.block_table`.
+  Constructed with an explicit `block_size`.
+- `class RadixCache` — prefix sharing: `.match_prefix(ids) -> (node, matched_len)`;
+  `.insert(ids, ...)`. A shared prefix **must not recompute** its K/V (§3.3).
+
+### 10.3 Grading (per task) — teacher-forced logits + free-run tokens
+
+**401.** Two checks (the §Q2 decision):
+- **Test A (primary, loud):** freeze the composed-oracle per-position logits over the full
+  greedy sequence; `prefill(prompt)` then `decode_step` through the *known* frozen tokens and
+  assert each step's logits `≈` the oracle at that position at **`rtol≈1e-9`**. A cache/offset/
+  mask bug fails at the exact step it occurs.
+- **Test B (secondary, exact):** `kv_generate` free-runs from the prompt and its token ids
+  must equal the frozen greedy sequence exactly.
+- **Invariants:** `cache.length` advances by exactly 1 per `decode_step`; `get(layer)` returns
+  the contiguous prefix; prefill of length `p` leaves `length == p`.
+
+**402.** Each request's emitted token ids == its standalone `kv_generate`; every active
+sequence advances exactly one token per `step`; finished sequences are retired and stop
+appearing in `step()` output.
+
+**403.** Paged/prefix-cached **logits** == the 401 contiguous-cache logits at `rtol≈1e-9`
+(same oracle); a radix prefix **hit does not recompute** the shared prefix (assert via a
+recompute counter / call spy); allocator invariants — no block double-allocated, freed blocks
+return to the pool, `get` reconstructs the contiguous K/V exactly from the block table.
+
+### 10.4 Fixtures (reuse 306's tiny Qwen3, extend for decode)
+
+- **Config:** the **exact 306 tiny config** — `V=64, dim=16, n_layers=2, n_heads=4,
+  n_kv_heads=2, head_dim=4, ffn=32, base=1e4, eps=1e-6` — so 401–403 inherit 306's
+  composed-oracle machinery verbatim. `max_seq_len=64` for cache preallocation.
+- **Sequence:** prompt = 306's seeded `input_ids` (len 5); `n_new = 8` greedy tokens.
+  `gen_fixtures.py` greedy-decodes the composed float64 oracle for 8 steps and freezes **both**
+  the full token sequence (len 13) *and* the full-sequence per-position logits `(1, 13, V)` —
+  Test A reads the logits, Test B reads the tokens. HF-anchor at authoring time (`rtol≈1e-3`)
+  exactly as 306.
+- **Block size (403):** `block_size = 4` for the fixture → a 13-token sequence spans 4 blocks
+  (genuine multi-block paging) and a block-aligned shared prefix (len 8 = 2 blocks) exercises
+  radix cleanly. README notes production vLLM uses 16; the small value is a fixture choice.
+
+### 10.5 Real-weights demo (Tier C, skippable)
+
+401–403 ship a `download.sh` for **`Qwen/Qwen3-0.6B`** reusing **306's `convert.py`**; the
+learner watches their own `kv_generate` / `Engine` produce real text, token-equal to the
+stateless 304/306 run, much faster. `@pytest.mark.skipif` when weights are absent — the graded
+path stays hermetic on the tiny fixture (no download needed to grade).
+
+### 10.7 Prod-fidelity & performance — "prove the mechanism, not just the output"
+
+L4 is where **correctness stops being the only bar**. Each Track-1 task mirrors a specific
+mechanism from a *named production serving framework*, and every task carries at least one
+assertion that **fails on a correct-but-naive implementation** — an implementation that
+returns the right logits the slow/wasteful way. That single rule is what makes this a systems
+course rather than three more forward passes. Because L4 is a pure-NumPy sim (no kernels, no
+wall-clock), "performance" is asserted **structurally/analytically** — compute-tensor shapes,
+recompute counts, live-block counts — the way one proves an algorithm's complexity, never by
+timing. READMEs state these as *guarantees the system must meet* (the contract), never as a
+recipe.
+
+**401 — the prefill/decode split & O(1) incremental decode.** Mirrors the universal
+engine split every framework makes: a **prefill** phase (whole prompt once, one `L×L`
+attention, *compute-bound*) and a **decode** phase (one token, `(1×kv_len)` attention,
+*memory-bandwidth-bound* — reloading KV + weights). The cache is a **contiguous preallocated**
+per-layer K/V store (HF `StaticCache`, the physical thing vLLM later pages); positions offset
+by `cache.length`; the decode mask is `(1×kv_len)`, not square.
+*Performance property (tested):* decode does **not recompute the prefix** — assert the score
+tensor built per decode step is `(n_heads, 1, kv_len)` (a single query row), so decode is
+`O(kv_len)`/token and generation `O(L²)` not the stateless `O(L³)`. Test B's token-parity with
+stateless `generate` then proves *same output at 1/L the FLOPs*.
+
+**402 — continuous (iteration-level) batching (Orca → vLLM scheduler).** Mirrors **Orca's
+iteration-level scheduling** (= vLLM continuous batching): a *ragged* running set advanced one
+token per iteration; an EOS request is **retired mid-batch** and its slot immediately reused by
+a waiting request — no head-of-line blocking, unlike static/request-level batching that pads to
+the longest and stalls throughput.
+*Performance property (tested):* **no wasted compute on finished sequences** — a retired
+request never appears in a later `step()` and is not advanced; **slot reuse** — a queued
+request begins the very next step after a short one finishes, not after the whole batch drains;
+**iteration-level** — every live request advances exactly one token per `step`. A naive
+batch-until-all-done scheduler fails the slot-reuse assertion.
+
+**403 — PagedAttention (vLLM) + RadixAttention (SGLang).** Mirrors **PagedAttention** (KV in
+fixed-size **blocks** via a per-request **block table**, physically non-contiguous → no external
+fragmentation, no "reserve max_seq_len/request" waste) and **RadixAttention** (a prefix/radix
+tree so requests sharing a prompt prefix **physically share** its KV blocks, computed once).
+*Performance property (tested):* **memory is O(used blocks)** not `O(max_seq_len × requests)`
+— assert `⌈tokens/block⌉` live blocks/request, internal fragmentation ≤ one block; **prefix hit
+skips recompute** — a call-spy/recompute counter shows a shared prefix's K/V is computed only
+for the novel suffix; **shared blocks are physically shared** — N requests with a common prefix
+hold `< N×` the blocks; **allocator invariants** — freed blocks return to the pool, no physical
+block double-mapped (except intentional read-shared prefix blocks), and paged `get`
+reconstructs the exact contiguous K/V 401 would (`rtol≈1e-9`). A 403 that *copies* the shared
+prefix produces identical logits but fails the no-recompute and shared-block assertions.
+
+### 10.6 Build order
+
+Prototype **401 end-to-end first** (README + stub + tests + a temporary `solution.py` drafted,
+`uv run grade -s 401` green, then reverted to a byte-identical `NotImplementedError` stub per
+decision 7) to validate the `KVCache` seam and the teacher-forced harness against working code
+**before** 402/403 lean on it. Then 402, then 403.
