@@ -27,13 +27,15 @@ The reuse facade is `from leet_llm import <name>`; add L4 names to `leet_llm/_re
 
 ## Global Constraints (bind every task — copy into each implementer + final-review dispatch)
 
-1. **Ship UNSOLVED (decision 7).** The student stub `<slug>.py` and `solution.py` are
-   **byte-identical** and every registered function/method **raises `NotImplementedError`**.
-   The deliverable is README + tests + committed fixtures. **Validate** by temporarily drafting
-   a real `solution.py`, generating fixtures with it, running `uv run grade -s 4NN` (green) and
-   `uv run grade 4NN` (must fail cleanly — *only* `NotImplementedError`, no import/collection
-   error), then **revert `solution.py` to byte-identical with the stub**. Commit the fixtures,
-   never the worked solution.
+1. **Stub UNSOLVED, `solution.py` REAL (repo convention — overrides design decision 7).**
+   Per CLAUDE.md ("`solution.py` is the only place the full implementation lives") and every
+   committed task (301–311), ship the **student stub `<slug>.py` raising `NotImplementedError`**
+   and a **REAL, working `solution.py`** — NOT byte-identical, NOT reverted. This is what makes
+   `grade -s`'s all-solutions stack work (402 imports 401's solution, etc.). Validate in the
+   **shipped state**: `uv run grade -s 4NN` is GREEN (real solution) and `uv run grade 4NN`
+   FAILS CLEANLY (student stub, *only* `NotImplementedError`, no import/collection error). Commit
+   README + tests + fixtures + the UNSOLVED stub + the REAL solution + registry entry. The stub
+   must never leak logic (CLAUDE.md Stub-vs-solution principle).
 2. **Reuse is mandatory (decision 8).** The re-authored forward imports L2/L3 **primitives**
    from the facade — `embedding`, `rms_norm`, `qk_norm`, `rope_half`, `sdpa`, `affine`,
    `group_last_axis`, `ungroup_last_axis`, `swiglu_ffn`, `add_residual`, `masked_fill`,

@@ -152,10 +152,14 @@ you must communicate." No torch, no MPI, no GPU.
    `multiprocessing` capstone, **skippable** like L3's Tier-C real-weights capstone.
 6. **Pure NumPy, PoC/simulation.** No GPU kernels, no real distributed runtime,
    no autograd.
-7. **Ship UNSOLVED.** As in L2/L3: learner stub `<file>.py` and `solution.py` are
-   **byte-identical** and raise `NotImplementedError`; validate by temporarily drafting a
-   real `solution.py`, running `uv run grade -s 4NN` (L3 deps ARE solved), then reverting
-   before commit; confirm the stub fails **cleanly** (only `NotImplementedError`).
+7. **Stub UNSOLVED, `solution.py` REAL** (corrected 2026-06-30 — supersedes the earlier
+   "byte-identical NotImplementedError solution"). As actually shipped across L2/L3 (301–311)
+   and mandated by CLAUDE.md ("`solution.py` is the only place the full implementation lives"):
+   the learner stub `<file>.py` raises `NotImplementedError`; `solution.py` is the **real,
+   working reference** (NOT byte-identical, NOT reverted). This is what makes `grade -s`'s
+   all-solutions stack resolve across tasks (402 imports 401's solution, etc.). Validate in the
+   **shipped state**: `uv run grade -s 4NN` GREEN and `uv run grade 4NN` fails **cleanly** (only
+   `NotImplementedError`). The stub must never leak logic.
 8. **L3 is oracle + primitives, not machinery** (§4a). Every L4 system *re-authors* its
    forward loop; the L3 forward and `generate` are reused only (a) as the equivalence oracle
    (§3.2) and (b) as the imported primitive library (`embedding`, `rms_norm`, `qk_norm`,
@@ -470,7 +474,7 @@ prefix produces identical logits but fails the no-recompute and shared-block ass
 
 ### 10.6 Build order
 
-Prototype **401 end-to-end first** (README + stub + tests + a temporary `solution.py` drafted,
-`uv run grade -s 401` green, then reverted to a byte-identical `NotImplementedError` stub per
+Prototype **401 end-to-end first** (README + unsolved stub + REAL `solution.py` + tests +
+fixtures; `uv run grade -s 401` green and `uv run grade 401` clean-fail in the shipped state per
 decision 7) to validate the `KVCache` seam and the teacher-forced harness against working code
 **before** 402/403 lean on it. Then 402, then 403.
