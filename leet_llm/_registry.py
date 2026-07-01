@@ -142,4 +142,9 @@ REGISTRY: dict[str, tuple[str, str]] = {
     "Llama31Params": ("307_llama31_model", "Llama31Params"),
     "load_llama31": ("307_llama31_model", "load_llama31"),
     "llama31_forward": ("307_llama31_model", "llama31_forward"),
+    # L4 — Inference Systems & Serving
+    "KVCache": ("401_kv_cache", "KVCache"),
+    "prefill": ("401_kv_cache", "prefill"),
+    "decode_step": ("401_kv_cache", "decode_step"),
+    "kv_generate": ("401_kv_cache", "kv_generate"),
 }

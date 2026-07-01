@@ -34,7 +34,7 @@ def _stub_path(task_dir: pathlib.Path) -> pathlib.Path:
     candidates = [
         p
         for p in sorted(task_dir.glob("*.py"))
-        if p.stem not in ("solution", "conftest", "convert")
+        if p.stem not in ("solution", "conftest", "convert", "utils")
     ]
     if len(candidates) != 1:
         raise RuntimeError(
