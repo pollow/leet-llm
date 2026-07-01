@@ -147,4 +147,5 @@ REGISTRY: dict[str, tuple[str, str]] = {
     "prefill": ("401_kv_cache", "prefill"),
     "decode_step": ("401_kv_cache", "decode_step"),
     "kv_generate": ("401_kv_cache", "kv_generate"),
+    "Engine": ("402_continuous_batching", "Engine"),
 }
