@@ -1,7 +1,6 @@
 # AGENTS.md
 
-Guidance for working in this repo, shared by **all** coding agents. This is the canonical
-authoring/maintenance doc; `CLAUDE.md` is a symlink to it, so edit `AGENTS.md` only.
+Guidance for working in this repo, shared by **all** coding agents.
 Student-facing docs live in `README.md` and per-task `README.md`s; this file is for
 authoring/maintenance and is **not** shown to students.
 
