@@ -36,9 +36,14 @@ authored.
 - **One function, one task.** Each task is a self-contained folder; the student edits a
   single stub file, and `tests/` grades it.
 - **Stub vs. solution.** Each task ships exactly one student stub (the lone non-`solution`,
-  non-`conftest`, non-`convert` `.py`) plus a `solution.py` reference. The stub's functions
-  **raise `NotImplementedError`** — a stub must never contain a working implementation, or
-  it leaks the answer. `solution.py` is the only place the full implementation lives.
+  non-`conftest`, non-`convert`, non-`utils` `.py`) plus a `solution.py` reference. The stub's
+  functions **raise `NotImplementedError`** — a stub must never contain a working implementation,
+  or it leaks the answer. `solution.py` is the only place the full implementation lives, and it
+  is **REAL, not a reverted `NotImplementedError` copy** — `grade -s` runs an all-solutions
+  stack, so a task whose `solution.py` is blank breaks every downstream task that reuses it.
+  `utils.py` is the reserved name for a task's non-graded helpers (demo/CLI plumbing); it is
+  excluded from stub detection (`leet_llm/_loader.py`) and may be imported by sibling tasks
+  (by file path via `importlib`, to dodge the `import utils` name clash — see `401`↔`306`).
 - **READMEs are tutorials, not specs.** Per-task READMEs follow a fixed shape
   (Description · the Math · Function Signature · Read More · How to Test) and state
   framework facts, never the solution (author-only tricks like `grade -s` stay out). But
@@ -48,7 +53,12 @@ authored.
   costs"); naming a helper is not teaching it. The full bar — delta map, ordered
   Why/Purpose/What/How/Check steps, verification ladder, debug playbook — is the
   **README Tutorial Standard**: `docs/superpowers/specs/2026-06-26-readme-tutorial-standard.md`.
-  Follow it for every L3+ README.
+  Follow it for every L3+ README. **Verify the bar with a blind student-sim**: before shipping a
+  task/track, dispatch a fresh-context agent given *only* the student-visible files (README +
+  stub + tests + prior-task solutions it may reuse), let it solve into `solution.py` (discarded,
+  never committed), and treat any contract fact it had to reverse-engineer from the tests as a
+  README gap to fix. This caught real "guess-the-hidden-intent" gaps in L4 Track 1 that all
+  passing tests hid.
 - **Masks are boolean.** The project-wide mask contract is a **bool** array: `True` means
   masked/hidden/forbidden, `False` means visible/allowed. This holds in code *and* docs.
   Do **not** introduce or describe "additive masks" (`-inf`/`-1e9` score bias) as the API
@@ -64,6 +74,11 @@ authored.
   Re-implementing an existing primitive is a defect to fix, not a style preference. (L0–L3
   predate strict enforcement and still carry un-saturated reuse to audit later.)
 - **Tests encode invariants**, not just oracle values, so a partial/wrong stub fails loudly.
+  For **systems tasks (L4+)**, go further: every task carries ≥1 assertion that **fails on a
+  correct-but-naive implementation** — one that returns the right numbers the slow/wasteful way
+  ("prove the mechanism, not just the output"). Observe the property *through the registered API*
+  (e.g. spy on the imported `sdpa` to prove decode builds a single `(…,1,kv_len)` query row, not
+  a full re-forward), so the test can't pass vacuously and isn't coupled to internal structure.
 
 ## Grading
 

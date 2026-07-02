@@ -478,3 +478,48 @@ Prototype **401 end-to-end first** (README + unsolved stub + REAL `solution.py` 
 fixtures; `uv run grade -s 401` green and `uv run grade 401` clean-fail in the shipped state per
 decision 7) to validate the `KVCache` seam and the teacher-forced harness against working code
 **before** 402/403 lean on it. Then 402, then 403.
+
+---
+
+## 11. Track-1 learnings → carry into Track 2/3 (2026-06-30)
+
+Track 1 (401–403) shipped and passed a blind student-sim ("best-designed L4 track"). The
+patterns below are what *made* it cohere; reuse them for Tracks 2–3 (they are not re-litigated
+per task).
+
+- **Interface-seam is the structural spine (generalize the KVCache seam).** The win in Track 1
+  was registering a *thin interface* (the `KVCache` storage seam) separate from the driver
+  (`prefill`/`decode_step`), so 402 (one cache/request) and 403 (`PagedKVCache`) substituted
+  **behind the seam with the driver unchanged**. Do the same in Track 2: the **collectives API
+  (404) over a per-rank array list is the seam**, and `sharded_forward` (405) / the
+  multiprocessing capstone (406) plug into it unchanged — 406 swaps the in-process ring for a
+  real-IPC ring *behind the same collective interface*, exactly as 403 swapped the cache. In
+  Track 3, the **MLA latent cache (407)** reuses the 401→403 cache seam. Register the interface;
+  let the internals be the learner's.
+
+- **"Prove the mechanism" applies to every track (§10.7), not just Track 1.** Each Track-2/3
+  task needs ≥1 assertion that fails on a correct-but-naive impl, observed through the API:
+  *collectives (404)* — ring all-reduce == `np.sum` **and** every rank ends identical **and**
+  `dispatch∘combine` == identity (a single-buffer shortcut that ignores the ring must fail);
+  *TP/PP (405)* — assert work is *actually sharded* (each rank holds/computes only its slice;
+  a one-rank fallback that ignores `world` would still match logits and must fail a
+  shard-shape / where-computed check); *expert-parallel (408)* — only local experts compute +
+  all-to-all identity; *MLA (407)* — the **analytic** `kv_bytes_per_token` inequality
+  (`kv_lora_rank + rope_dim` ≪ `2·n_kv_heads·head_dim`), asserted from the config, not a fixture.
+
+- **One hermetic tiny fixture per track, frozen once.** Track 1 reused 306's exact tiny Qwen3
+  config + composed float64 oracle across 401/402/403 (frozen logits/tokens, HF-anchored at
+  `rtol≈1e-3`, graded at `rtol=1e-9/atol=0`). Track 2 reuses the *same* Qwen3 oracle
+  (sharded/distributed logits == `qwen3_forward`); Track 3 reuses 311's DeepSeek oracle. Freeze
+  the reference once in `gen_fixtures.py`; never call L3 live at grade time.
+
+- **Ship convention (decision 7, corrected).** Stub UNSOLVED + `solution.py` REAL. This is what
+  makes `grade -s`'s all-solutions stack resolve across a track's dependency chain (405 imports
+  404's solution, etc.) — do **not** ship blank/byte-identical solutions.
+
+- **Authoring process that worked.** Subagent-driven, one task at a time, controller verifies
+  **inline** (byte-identical? no — now: stub raises + no leaked logic; `grade -s NNN` green;
+  `grade NNN` clean `NotImplementedError`-only fail; read any shared-infra change), one whole-
+  branch review at the end, then the **blind student-sim gate** (§7 / AGENTS.md) as the real
+  acceptance test. Pass Global Constraints to each implementer separately — the task-brief
+  extractor only pulls one task's section.
