@@ -236,7 +236,10 @@ def main() -> None:
     for i, (pr, seq, n_new) in enumerate(zip(prompts, seqs, n_news)):
         print(f"  req {i}: prompt_len={len(pr)} n_new={n_new} seq={seq}")
 
-    assert n_news[0] != n_news[1], "first two admitted requests must finish at different steps"
+    # Slot-reuse test needs req0 to OUTLIVE req1 (the shorter one retires first,
+    # freeing a slot for the queued request while req0 still runs). Assert the
+    # direction, not just inequality, so the fixture can't silently flip.
+    assert n_news[0] > n_news[1], "first admitted request must run longer than the second"
     eos_probe_id, eos_probe_nnew = _eos_probe(seqs[0], len(prompts[0]))
     print(f"  eos_probe: id={eos_probe_id} first appears at req0 gen-step {eos_probe_nnew}")
 

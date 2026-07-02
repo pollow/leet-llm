@@ -229,13 +229,11 @@ def kv_generate(
 
 
 if __name__ == "__main__":
-    from utils import run_qwen3_cli
+    from utils import run_kv_generate_cli
 
-    run_qwen3_cli(
+    run_kv_generate_cli(
         module_name="401_kv_cache/solution.py",
         load_fn=load_qwen3,
-        forward_fn=lambda input_ids, params, cfg: kv_generate(
-            input_ids, params, cfg, n_new=8
-        ),
+        kv_generate_fn=kv_generate,
         config_cls=Qwen3Config,
     )

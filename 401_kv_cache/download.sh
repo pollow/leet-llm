@@ -17,4 +17,6 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 REPO="$(cd "$HERE/.." && pwd)"
 LEET_LLM_TARGET=solution uv run --group gen python "$REPO/306_qk_norm/convert.py"
 echo "Done -> $REPO/306_qk_norm/qwen3_0_6b.npz"
-echo "Now load those weights (306.load_qwen3), build a KVCache, and run kv_generate."
+echo
+echo "Now watch your own KVCache generate real text:"
+echo "  uv run python $REPO/401_kv_cache/kv_cache.py --prompt 'Once upon a time' --max-new-tokens 40"

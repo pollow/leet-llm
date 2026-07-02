@@ -120,3 +120,16 @@ def kv_generate(
     Returns ``prompt + generated`` token ids. The Tier-C real-weights demo entry point.
     """
     raise NotImplementedError
+
+
+if __name__ == "__main__":
+    # Skippable real-weights demo: watch your own KVCache generate Qwen3-0.6B text.
+    # Grade-time tests are hermetic (frozen fixture); this needs `./download.sh` first.
+    from utils import run_kv_generate_cli
+
+    run_kv_generate_cli(
+        module_name="401_kv_cache/kv_cache.py",
+        load_fn=load_qwen3,
+        kv_generate_fn=kv_generate,
+        config_cls=Qwen3Config,
+    )
