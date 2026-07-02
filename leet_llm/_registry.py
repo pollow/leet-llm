@@ -148,4 +148,7 @@ REGISTRY: dict[str, tuple[str, str]] = {
     "decode_step": ("401_kv_cache", "decode_step"),
     "kv_generate": ("401_kv_cache", "kv_generate"),
     "Engine": ("402_continuous_batching", "Engine"),
+    "PagedKVCache": ("403_paged_kv", "PagedKVCache"),
+    "RadixCache": ("403_paged_kv", "RadixCache"),
+    "BlockPool": ("403_paged_kv", "BlockPool"),
 }
