@@ -62,6 +62,14 @@ class KVCache:
       length ``self.length``.
     - ``length`` — number of tokens cached (advances by exactly 1 per decode step).
 
+    **Write-then-read within one forward call.** Each call to ``prefill`` or
+    ``decode_step`` loops over layers; for each layer it calls ``append`` first (writing
+    that layer's K/V), then calls ``get`` for attention. ``get(layer)`` MUST return the
+    tokens appended earlier in the *same call* — not only tokens from prior calls.
+    ``length`` reflects *committed* tokens; it advances by exactly 1 after the *entire*
+    forward (not per-layer). A naive implementation that advances ``length`` on the first
+    layer will write subsequent layers at the wrong offset.
+
     GQA-specific by construction (one store per KV head); no MLA generalization.
     """
 

@@ -52,8 +52,11 @@ them). The paging and the tree internals are yours to design.
 
 ### `BlockPool` — the shared physical store
 
-- `BlockPool(cfg, block_size)` — a pool of fixed-size physical blocks. Each block holds
-  `block_size` tokens' worth of post-RoPE keys and raw values across **all** layers.
+- `BlockPool(cfg, block_size)` — a pool of fixed-size physical blocks. Each block stores
+  **two** arrays, each of shape `(n_layers, n_kv_heads, block_size, head_dim)` — one for
+  post-RoPE keys and one for raw values — for `block_size` tokens across all layers.
+  `block_size` is also a **public attribute** (`pool.block_size`) readable by downstream
+  classes (e.g. `RadixCache`).
 - `allocate() -> int` — hand out a free block id (reusing a freed one when available),
   and mark it referenced once.
 - `incref(bid)` — add a reference (a second request adopting a shared block).
@@ -80,13 +83,17 @@ them). The paging and the tree internals are yours to design.
 
 ### `RadixCache` — prefix sharing (RadixAttention)
 
-- `RadixCache(pool)` — a radix tree over the same pool the caches use.
+- `RadixCache(pool)` — a radix tree over the same pool the caches use. `block_size` is
+  read from `pool.block_size`.
 - `insert(ids, block_ids)` — record that a **block-aligned** prefix `ids` is cached by
   `block_ids` (`len(ids) == len(block_ids) * block_size`).
 - `match_prefix(ids) -> (node, matched_len)` — the longest cached, **block-aligned**
-  prefix of `ids`; `node.block_ids` covers the matched tokens and `matched_len` is a
-  whole number of blocks. Returns `(None, 0)` on a miss. **Reuse those blocks; do not
-  recompute them.**
+  prefix of `ids`; `matched_len` is a whole number of blocks. Returns `(None, 0)` on a
+  miss. **`node.block_ids` is the cumulative list of physical block ids from the root to
+  that node, in order** — not just the node's own edge, but every block needed to
+  reconstruct the full matched prefix. You can pass it directly to
+  `reuse_prefix(node.block_ids, matched_len)`. **Reuse those blocks; do not recompute
+  them.**
 
 **GIVEN systems facts.**
 - `block_size` is fixed for the pool (the fixture uses **4**; production vLLM uses
@@ -127,6 +134,7 @@ that *copies* the prefix produces identical logits but holds **distinct** blocks
 
 ```python
 class BlockPool:
+    block_size: int                           # public — read by RadixCache etc.
     def __init__(self, cfg: Qwen3Config, block_size: int) -> None: ...
     def allocate(self) -> int: ...
     def incref(self, bid: int) -> None: ...

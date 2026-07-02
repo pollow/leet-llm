@@ -53,7 +53,10 @@ any forward math — it *drives* 401's `prefill` / `decode_step`.
   next token for **every currently-running request**, exactly one entry per running
   request. Within a step the engine first **admits** waiting requests onto any free
   slots (prefilling them, which emits their first token) and then advances the
-  already-running requests by one `decode_step`.
+  already-running requests by one `decode_step`. **A newly admitted request's prefill
+  IS that step's first token emission** — it appears in this `step()`'s return list,
+  not the next one. A request admitted and a request already running both contribute
+  exactly one `(req_id, token_id)` entry to the same step's output.
 - `is_finished(req_id) -> bool` — whether that request has retired (emitted eos or hit
   the length budget).
 

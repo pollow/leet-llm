@@ -45,8 +45,12 @@ __all__ = ["PagedKVCache", "RadixCache", "BlockPool"]
 class BlockPool:
     """A shared pool of fixed-size physical KV blocks with reference counting.
 
-    Each physical block stores the post-RoPE keys and raw values for ``block_size``
-    tokens across *all* layers: shape ``(n_layers, n_kv_heads, block_size, head_dim)``.
+    Each physical block stores post-RoPE keys and raw values for ``block_size`` tokens
+    across *all* layers — as **two** separate arrays, each of shape
+    ``(n_layers, n_kv_heads, block_size, head_dim)``: one for keys (post-RoPE) and one
+    for values (raw). ``block_size`` is a **public attribute** (``pool.block_size``) so
+    downstream classes such as ``RadixCache`` can read it directly.
+
     ``free`` decrements a refcount and only returns a block to the free list when its
     last holder releases it, so a reference-shared prefix block survives until every
     request that adopted it frees.
@@ -140,11 +144,15 @@ class RadixCache:
     already-computed K/V.
 
     - ``RadixCache(pool)`` — build over the same ``BlockPool`` the caches use.
+      ``block_size`` is read from ``pool.block_size``.
     - ``insert(ids, block_ids)`` — record that a block-aligned prefix ``ids`` is cached
       by ``block_ids`` (``len(ids) == len(block_ids) * block_size``).
     - ``match_prefix(ids) -> (node, matched_len)`` — longest cached, block-aligned
-      prefix; ``node.block_ids`` covers the matched tokens, ``matched_len`` is a whole
-      number of blocks. Reuse those blocks; do NOT recompute them.
+      prefix; ``matched_len`` is a whole number of blocks. **``node.block_ids`` is the
+      cumulative list of physical block ids from the root to that node, in order** — not
+      just the blocks at this node's own edge, but every block needed to reconstruct the
+      full matched prefix. Pass it directly to ``reuse_prefix(node.block_ids,
+      matched_len)``. Returns ``(None, 0)`` on a miss.
     """
 
     def __init__(self, pool: BlockPool) -> None:

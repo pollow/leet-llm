@@ -68,6 +68,15 @@ methods as a fixed API — that invariance is the whole point of the track.
 - `length` — number of tokens cached so far. It is `0` at construction, equals the
   prompt length after `prefill`, and **advances by exactly 1 per `decode_step`**.
 
+**Write-then-read within one forward call.** Within a single `prefill` or `decode_step`
+call the forward loop processes layers one at a time. For each layer, `append` is called
+first (writing that layer's K/V into the cache), then `get` is called to retrieve the
+full K/V for attention. This means `get(layer)` **must include the tokens appended
+earlier in the same call** — not only tokens from prior calls. `length` reflects
+*committed* tokens and advances by exactly 1 after the *entire* decode forward completes
+— not per layer. (Advancing `length` too early, e.g. on the first layer, breaks the
+write offset for all subsequent layers.)
+
 **GIVEN systems facts.**
 - The cache stores **post-RoPE keys** and **raw values** (values are never rotated).
 - Storage is **GQA-specific** — one entry per KV head. (MLA, task 407, caches a
